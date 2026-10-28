@@ -5,3 +5,4 @@ out/
 # Agent-Dateien bleiben lokal (oeffentliches Repo)
 AGENTS.md
 CLAUDE.md
+docs/PLAN.md
