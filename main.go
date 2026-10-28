@@ -12,7 +12,7 @@ import (
 
 // version wird bei jeder Aenderung hochgezaehlt; der Release-Workflow prueft,
 // dass der Tag dazu passt.
-const version = "1.0.0"
+const version = "1.1.0"
 
 func main() {
 	if len(os.Args) > 1 {
@@ -109,7 +109,7 @@ func runServer() {
 		mcp.WithString("body", mcp.Required(), mcp.Description("Your reply text (placed above the quote).")),
 		mcp.WithBoolean("reply_all", mcp.Description("true = reply to all (including CC). Default false.")),
 		mcp.WithBoolean("keep_attachments", mcp.Description("true = carry over the original's attachments. Default false.")),
-		mcp.WithArray("attachments", mcp.WithStringItems(), mcp.Description("Optional: local file paths to attach (e.g. a screenshot).")),
+		mcp.WithArray("attachments", mcp.WithStringItems(), mcp.Description("Optional: local file paths to attach (e.g. a screenshot). Only files under the user profile or %TEMP% (see outlook_whoami).")),
 	), handleReply)
 
 	s.AddTool(mcp.NewTool("mail_sync",
@@ -165,8 +165,34 @@ func runServer() {
 		mcp.WithString("id", mcp.Description(idDesc)),
 		mcp.WithArray("ids", mcp.WithStringItems(), mcp.Description(idsDesc)),
 		mcp.WithNumber("index", mcp.Description("Optional: only this attachment (1-based index from mail_attachments). Empty = all. Applies to every given email.")),
-		mcp.WithString("dir", mcp.Description("Optional: target folder. Empty = %TEMP%\\outlook-classic-mcp-attachments.")),
+		mcp.WithString("dir", mcp.Description("Optional: target folder under the user profile or %TEMP%. Empty = %TEMP%\\outlook-classic-mcp-attachments.")),
 	), handleSaveAttachment)
+
+	s.AddTool(mcp.NewTool("contacts_search",
+		mcp.WithDescription("Searches your Outlook contacts (name, company, email) and the company directory (Global Address List, by name) for people and distribution lists. Returns name, SMTP email, company, department, phone and an ID for contacts_get. Word order doesn't matter ('Smith Anna' finds 'Anna Smith')."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Name or part of it, company or email, e.g. 'Smith' or 'Anna Sm'.")),
+		mcp.WithNumber("top", mcp.Description("Maximum hits per source (contacts, directory). Default 10, max 50.")),
+	), handleContactsSearch)
+
+	s.AddTool(mcp.NewTool("contacts_resolve",
+		mcp.WithDescription("Turns a person's name into their email (SMTP) address — use this before writing a draft to someone you only know by name. Returns exactly one address, or the list of candidates if the name is ambiguous (never guesses)."),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Name, e.g. 'Anna Smith', or an email address to check.")),
+	), handleContactsResolve)
+
+	s.AddTool(mcp.NewTool("contacts_get",
+		mcp.WithDescription("Shows all details of one or more contacts or directory entries by ID (from contacts_search/contacts_list): emails, phones, company, department, job title, office, address, manager, notes."),
+		mcp.WithString("id", mcp.Description("ID of one contact or directory entry.")),
+		mcp.WithArray("ids", mcp.WithStringItems(), mcp.Description("Several IDs at once — one Outlook round trip.")),
+	), handleContactsGet)
+
+	s.AddTool(mcp.NewTool("contacts_list",
+		mcp.WithDescription("Lists your own Outlook contacts (not the company directory), sorted by name."),
+		mcp.WithNumber("top", mcp.Description("Number of contacts (default 50, max 200).")),
+	), handleContactsList)
+
+	s.AddTool(mcp.NewTool("outlook_whoami",
+		mcp.WithDescription("Shows the signed-in mailbox (name, email), Outlook version and connection state, and this server's settings: whether sending is possible and which folders attachments may be read from or saved to."),
+	), handleWhoami)
 
 	if err := server.ServeStdio(s); err != nil {
 		fmt.Fprintln(os.Stderr, "Server error:", err)
@@ -287,8 +313,12 @@ func handleRead(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult
 			fmt.Fprintf(&b, "✗ %s — %s\n", m.ID, m.Error)
 			continue
 		}
+		from := m.From
+		if m.FromEmail != "" && !strings.EqualFold(m.FromEmail, m.From) {
+			from += " <" + m.FromEmail + ">"
+		}
 		fmt.Fprintf(&b, "Subject: %s\nFrom: %s\nTo: %s\nDate: %s",
-			m.Subject, m.From, m.To, m.Received)
+			m.Subject, from, m.To, m.Received)
 		if strings.TrimSpace(m.Attachments) != "" {
 			b.WriteString("\nAttachments: " + m.Attachments)
 		}
@@ -546,6 +576,177 @@ func handleSaveAttachment(ctx context.Context, r mcp.CallToolRequest) (*mcp.Call
 		default:
 			fmt.Fprintf(&b, "   ✓ %s  (%d bytes)\n      %s\n", s.Filename, s.Size, s.Path)
 		}
+	}
+	return mcp.NewToolResultText(b.String()), nil
+}
+
+// ---- Kontakte ----
+
+// formatContacts listet Personen; Zeilen nur mit Note kommen als Hinweis ans Ende.
+func formatContacts(cs []contactInfo, full bool) string {
+	var b strings.Builder
+	n := 0
+	for _, c := range cs {
+		if c.Note != "" && c.ID == "" && c.Name == "" {
+			continue
+		}
+		if c.Error != "" {
+			fmt.Fprintf(&b, "✗ %s — %s\n", c.ID, c.Error)
+			continue
+		}
+		n++
+		name := c.Name
+		if c.Email != "" {
+			name += " <" + c.Email + ">"
+		}
+		if c.Kind == "list" {
+			name += "  (distribution list)"
+		}
+		fmt.Fprintf(&b, "%d. %s\n", n, name)
+		var org []string
+		for _, v := range []string{c.JobTitle, c.Department, c.Company, c.Office} {
+			if v != "" {
+				org = append(org, v)
+			}
+		}
+		if len(org) > 0 {
+			fmt.Fprintf(&b, "   %s\n", strings.Join(org, " | "))
+		}
+		lines := [][2]string{{"Phone", c.Phone}, {"Mobile", c.Mobile}}
+		if full {
+			lines = append(lines, [][2]string{{"Email 2", c.Email2}, {"Email 3", c.Email3},
+				{"Home phone", c.HomePhone}, {"Address", c.Address}, {"Manager", c.Manager}}...)
+		}
+		for _, l := range lines {
+			if l[1] != "" {
+				fmt.Fprintf(&b, "   %s: %s\n", l[0], l[1])
+			}
+		}
+		src := "your contacts"
+		if c.Source == "directory" {
+			src = "company directory"
+		}
+		fmt.Fprintf(&b, "   Source: %s\n", src)
+		if full && c.Notes != "" {
+			fmt.Fprintf(&b, "   Notes:\n%s\n", c.Notes)
+		}
+		if c.ID != "" {
+			fmt.Fprintf(&b, "   ID: %s\n", c.ID)
+		}
+	}
+	if n == 0 && b.Len() == 0 {
+		return ""
+	}
+	return b.String() + notes(cs)
+}
+
+func notes(cs []contactInfo) string {
+	var b strings.Builder
+	for _, c := range cs {
+		if c.Note != "" {
+			b.WriteString("\nNote: " + c.Note + "\n")
+		}
+	}
+	return b.String()
+}
+
+func clampN(v, d, max int) int {
+	if v <= 0 {
+		return d
+	}
+	return min(v, max)
+}
+
+func handleContactsSearch(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	query, err := r.RequireString("query")
+	if err != nil || strings.TrimSpace(query) == "" {
+		return mcp.NewToolResultError("parameter 'query' is missing or empty."), nil
+	}
+	cs, err := searchContacts(ctx, query, clampN(r.GetInt("top", 10), 10, 50))
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("contacts_search failed", err), nil
+	}
+	if out := formatContacts(cs, false); out != "" {
+		return mcp.NewToolResultText(out), nil
+	}
+	return mcp.NewToolResultText("No contacts found." + notes(cs)), nil
+}
+
+func handleContactsResolve(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	name, err := r.RequireString("name")
+	if err != nil || strings.TrimSpace(name) == "" {
+		return mcp.NewToolResultError("parameter 'name' is missing or empty."), nil
+	}
+	cs, err := resolveContact(ctx, name)
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("contacts_resolve failed", err), nil
+	}
+	people := 0
+	for _, c := range cs {
+		if c.Resolved {
+			return mcp.NewToolResultText(fmt.Sprintf("Resolved: %s <%s>\n\n%s", c.Name, c.Email,
+				formatContacts([]contactInfo{c}, false))), nil
+		}
+		if c.Name != "" || c.ID != "" {
+			people++
+		}
+	}
+	if people == 0 {
+		return mcp.NewToolResultText(fmt.Sprintf("No match for %q.\n%s", name, notes(cs))), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("%q is ambiguous — %d candidates. Ask the user which one is meant:\n\n%s",
+		name, people, formatContacts(cs, false))), nil
+}
+
+func handleContactsGet(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ids, err := collectIDs(r)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	cs, err := getContacts(ctx, ids)
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("contacts_get failed", err), nil
+	}
+	if out := formatContacts(cs, true); out != "" {
+		return mcp.NewToolResultText(out), nil
+	}
+	return mcp.NewToolResultText("No contact found."), nil
+}
+
+func handleContactsList(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	cs, err := listContacts(ctx, clampN(r.GetInt("top", 50), 50, 200))
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("contacts_list failed", err), nil
+	}
+	if out := formatContacts(cs, false); out != "" {
+		return mcp.NewToolResultText(out), nil
+	}
+	return mcp.NewToolResultText("No contacts."), nil
+}
+
+func handleWhoami(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	w, err := whoami(ctx)
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("outlook_whoami failed", err), nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Mailbox: %s <%s>\n", w.Name, w.Email)
+	if w.Store != "" && !strings.EqualFold(w.Store, w.Email) {
+		fmt.Fprintf(&b, "Store: %s\n", w.Store)
+	}
+	if w.Accounts > 1 {
+		fmt.Fprintf(&b, "Accounts in profile: %d (this server uses the default store)\n", w.Accounts)
+	}
+	fmt.Fprintf(&b, "Outlook: %s", w.OutlookVersion)
+	if w.Connection != "" {
+		fmt.Fprintf(&b, ", %s", w.Connection)
+	}
+	fmt.Fprintf(&b, "\nServer: outlook-classic-mcp %s\n", version)
+	b.WriteString("Sending: off — everything outgoing is a draft the user sends\n")
+	if sandboxOn() {
+		fmt.Fprintf(&b, "Attachment paths: only under %s\n", strings.Join(allowedRoots(), ", "))
+	} else {
+		fmt.Fprintf(&b, "Attachment paths: any (%s=1)\n", allowAnyPathEnv)
 	}
 	return mcp.NewToolResultText(b.String()), nil
 }

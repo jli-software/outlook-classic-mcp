@@ -51,6 +51,7 @@ type outlookCOM struct {
 	dial func() (backend, error)
 	// sleep ist im Test austauschbar, damit Retries nicht Sekunden kosten.
 	sleep func(time.Duration)
+	dir   dirCache
 }
 
 var outlook = &outlookCOM{dial: dialOutlook, sleep: time.Sleep}
@@ -206,7 +207,7 @@ func (c *outlookCOM) attempt(be *backend, op string, params map[string]any) ([]b
 	}
 	ol, ns := (*be).begin()
 	defer (*be).end()
-	s := &session{ol: ol, ns: ns}
+	s := &session{ol: ol, ns: ns, dir: &c.dir}
 	if err := s.do(op, params); err != nil {
 		return nil, err
 	}

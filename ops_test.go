@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -222,7 +223,7 @@ func TestReplyKeepsHTMLAndAttaches(t *testing.T) {
 	b := newTestBox()
 	orig := b.mail(b.inbox, "Frage", at(1))
 	got := run(t, b.session(), "reply", map[string]any{
-		"id": orig.props["EntryID"].(string), "body": "Hallo", "attachments": []string{`C:\x\a.pdf`, ""},
+		"id": orig.props["EntryID"].(string), "body": "Hallo", "attachments": []string{filepath.Join(t.TempDir(), "a.pdf"), ""},
 	})
 	if len(got) != 1 || got[0].Subject != "AW: Frage" {
 		t.Fatalf("Antwort: %+v", got)

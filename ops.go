@@ -16,6 +16,7 @@ import (
 type session struct {
 	ol, ns obj
 	out    bytes.Buffer
+	dir    *dirCache // Firmen-Adressbuch, lebt laenger als der Request
 }
 
 // Outlook-Konstanten (OlDefaultFolders, OlBodyFormat, OlItemType).
@@ -68,6 +69,16 @@ func (s *session) do(op string, p map[string]any) error {
 		return s.delete(p)
 	case "sync":
 		return s.sync(p)
+	case "contacts_search":
+		return s.contactsSearch(p)
+	case "contacts_resolve":
+		return s.contactsResolve(p)
+	case "contacts_get":
+		return s.contactsGet(p)
+	case "contacts_list":
+		return s.contactsList(p)
+	case "whoami":
+		return s.whoami()
 	}
 	return fmt.Errorf("unknown operation: %s", op)
 }
@@ -283,6 +294,7 @@ func (s *session) read(p map[string]any) error {
 			"id":          str(field(m, "EntryID")),
 			"subject":     str(field(m, "Subject")),
 			"from":        str(field(m, "SenderName")),
+			"from_email":  senderSMTP(m),
 			"to":          str(field(m, "To")),
 			"received":    recv,
 			"body":        str(field(m, "Body")),
@@ -332,6 +344,10 @@ func (s *session) saveAttachment(p map[string]any) error {
 	if dir == "" {
 		dir = filepath.Join(os.TempDir(), "outlook-classic-mcp-attachments")
 	}
+	dir, err := checkPath(dir)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -355,7 +371,7 @@ func (s *session) saveAttachment(p map[string]any) error {
 				return false, nil
 			}
 			found = true
-			name := str(field(a, "FileName"))
+			name := safeFileName(str(field(a, "FileName")))
 			path := filepath.Join(dir, name)
 			if used[strings.ToLower(path)] {
 				ext := filepath.Ext(name)
@@ -460,6 +476,18 @@ func (s *session) updateDraft(p map[string]any) error {
 }
 
 func (s *session) reply(p map[string]any) error {
+	// Pfade zuerst pruefen, bevor irgendetwas angelegt wird.
+	var files []string
+	for _, a := range pArr(p, "attachments") {
+		if a == "" {
+			continue
+		}
+		abs, err := checkPath(a)
+		if err != nil {
+			return err
+		}
+		files = append(files, abs)
+	}
 	orig, err := callObj(s.ns, "GetItemFromID", pStr(p, "id"))
 	if err != nil {
 		return err
@@ -496,7 +524,7 @@ func (s *session) reply(p map[string]any) error {
 	if pBool(p, "keep_attachments", false) {
 		if col, err := getObj(orig, "Attachments"); err == nil {
 			each(col, func(a obj) (bool, error) {
-				fp := filepath.Join(os.TempDir(), str(field(a, "FileName")))
+				fp := filepath.Join(os.TempDir(), safeFileName(str(field(a, "FileName"))))
 				if _, err := a.call("SaveAsFile", fp); err == nil {
 					rAtts.call("Add", fp)
 				}
@@ -504,10 +532,8 @@ func (s *session) reply(p map[string]any) error {
 			})
 		}
 	}
-	for _, a := range pArr(p, "attachments") {
-		if a != "" {
-			rAtts.call("Add", a)
-		}
+	for _, a := range files {
+		rAtts.call("Add", a)
 	}
 	if _, err := r.call("Save"); err != nil {
 		return err

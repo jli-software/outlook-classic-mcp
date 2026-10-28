@@ -13,6 +13,7 @@ type mailItem struct {
 	ID          string `json:"id"`
 	Subject     string `json:"subject"`
 	From        string `json:"from"`
+	FromEmail   string `json:"from_email"`
 	To          string `json:"to"`
 	Received    string `json:"received"`
 	Preview     string `json:"preview"`
@@ -60,6 +61,41 @@ type savedAttachment struct {
 	Size     int    `json:"size"`
 	Empty    bool   `json:"empty"`
 	Error    string `json:"error"`
+}
+
+// contactInfo ist ein eigener Kontakt oder ein Eintrag im Firmen-Adressbuch
+// (Source "contacts" bzw. "directory"). Eine Zeile nur mit Note ist ein
+// Hinweis zur Suche selbst.
+type contactInfo struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Email      string `json:"email"`
+	Email2     string `json:"email2"`
+	Email3     string `json:"email3"`
+	Company    string `json:"company"`
+	Department string `json:"department"`
+	JobTitle   string `json:"job_title"`
+	Office     string `json:"office"`
+	Phone      string `json:"phone"`
+	Mobile     string `json:"mobile"`
+	HomePhone  string `json:"home_phone"`
+	Address    string `json:"address"`
+	Manager    string `json:"manager"`
+	Notes      string `json:"notes"`
+	Kind       string `json:"kind"`
+	Source     string `json:"source"`
+	Resolved   bool   `json:"resolved"`
+	Note       string `json:"note"`
+	Error      string `json:"error"`
+}
+
+type whoamiInfo struct {
+	Name           string `json:"name"`
+	Email          string `json:"email"`
+	Store          string `json:"store"`
+	Accounts       int    `json:"accounts"`
+	Connection     string `json:"connection"`
+	OutlookVersion string `json:"outlook_version"`
 }
 
 type syncResult struct {
@@ -266,4 +302,42 @@ func saveAttachments(ctx context.Context, ids []string, dir string, index int) (
 		return nil, err
 	}
 	return parseJSONLines[savedAttachment](out), nil
+}
+
+// ---- Kontakte ----
+
+func contacts(ctx context.Context, op string, params map[string]any) ([]contactInfo, error) {
+	out, err := runOutlook(ctx, op, params)
+	if err != nil {
+		return nil, err
+	}
+	return parseJSONLines[contactInfo](out), nil
+}
+
+func searchContacts(ctx context.Context, query string, top int) ([]contactInfo, error) {
+	return contacts(ctx, "contacts_search", map[string]any{"query": query, "top": top})
+}
+
+func resolveContact(ctx context.Context, name string) ([]contactInfo, error) {
+	return contacts(ctx, "contacts_resolve", map[string]any{"name": name})
+}
+
+func getContacts(ctx context.Context, ids []string) ([]contactInfo, error) {
+	return contacts(ctx, "contacts_get", map[string]any{"ids": ids})
+}
+
+func listContacts(ctx context.Context, top int) ([]contactInfo, error) {
+	return contacts(ctx, "contacts_list", map[string]any{"top": top})
+}
+
+func whoami(ctx context.Context) (*whoamiInfo, error) {
+	out, err := runOutlook(ctx, "whoami", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	rs := parseJSONLines[whoamiInfo](out)
+	if len(rs) == 0 {
+		return nil, fmt.Errorf("no answer from Outlook")
+	}
+	return &rs[0], nil
 }

@@ -2,12 +2,16 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	ole "github.com/go-ole/go-ole"
 )
 
 // Live-Test gegen das echte Postfach, ueber den echten MCP-stdio-Pfad — das ist
@@ -173,8 +177,8 @@ func TestToolsListWithoutOutlook(t *testing.T) {
 	if err := json.Unmarshal(raw, &res); err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Tools) != 15 {
-		t.Errorf("got %d Tools, want 15", len(res.Tools))
+	if len(res.Tools) != 20 {
+		t.Errorf("got %d Tools, want 20", len(res.Tools))
 	}
 
 	byName := map[string]int{}
@@ -184,7 +188,7 @@ func TestToolsListWithoutOutlook(t *testing.T) {
 	// Batch-Tools muessen 'id' UND 'ids' anbieten, und 'id' darf nicht mehr
 	// required sein — sonst bricht der Batch-Aufruf.
 	for _, name := range []string{"mail_read", "mail_move", "mail_mark_read",
-		"mail_categorize", "mail_delete", "mail_attachments", "mail_save_attachment"} {
+		"mail_categorize", "mail_delete", "mail_attachments", "mail_save_attachment", "contacts_get"} {
 		i, ok := byName[name]
 		if !ok {
 			t.Errorf("%s fehlt", name)
@@ -460,4 +464,157 @@ func TestLiveWriteDrafts(t *testing.T) {
 		t.Logf("gespeichert: %s", saved)
 		break
 	}
+}
+
+// Kontakte live, nur lesend: whoami, den eigenen Namen und die eigene Adresse
+// aufloesen, einen Kollegen im Firmen-Adressbuch finden (Name ueber
+// OUTLOOK_MCP_COLLEAGUE, sonst der eigene Nachname).
+//
+//	$env:OUTLOOK_MCP_LIVE = "1"; go test -run TestLiveContacts -v .
+func TestLiveContacts(t *testing.T) {
+	requireLive(t)
+	c := startServer(t)
+
+	who, isErr := c.callTool("outlook_whoami", map[string]any{})
+	if isErr || !strings.Contains(who, "Mailbox: ") || !strings.Contains(who, "Sending: off") {
+		t.Fatalf("outlook_whoami: %s", who)
+	}
+	line := strings.TrimPrefix(strings.SplitN(who, "\n", 2)[0], "Mailbox: ")
+	name, email, _ := strings.Cut(strings.TrimSuffix(line, ">"), " <")
+	if name == "" || !strings.Contains(email, "@") {
+		t.Fatalf("whoami ohne Name/Adresse: %q", line)
+	}
+
+	for _, q := range []string{email, name} {
+		start := time.Now()
+		out, isErr := c.callTool("contacts_resolve", map[string]any{"name": q})
+		t.Logf("contacts_resolve(<%d chars>): %v", len(q), time.Since(start).Round(time.Millisecond))
+		if isErr || !strings.Contains(strings.ToLower(out), "resolved: ") || !strings.Contains(strings.ToLower(out), strings.ToLower(email)) {
+			t.Errorf("eigener Name/Adresse nicht aufgeloest: %.300s", out)
+		}
+		if strings.Contains(out, "/O=") {
+			t.Errorf("X.500-Adresse statt SMTP: %.300s", out)
+		}
+	}
+
+	q := os.Getenv("OUTLOOK_MCP_COLLEAGUE")
+	if q == "" {
+		f := strings.Fields(name)
+		q = f[len(f)-1]
+	}
+	for i := 0; i < 2; i++ { // zweiter Durchlauf aus dem Cache
+		start := time.Now()
+		out, isErr := c.callTool("contacts_search", map[string]any{"query": q, "top": 5})
+		t.Logf("contacts_search #%d: %v, %d hits", i+1, time.Since(start).Round(time.Millisecond), len(extractIDs(out)))
+		if isErr || len(extractIDs(out)) == 0 || !strings.Contains(out, "company directory") {
+			t.Fatalf("contacts_search: %.400s", out)
+		}
+		if i == 1 && time.Since(start) > 2*time.Second {
+			t.Errorf("zweite Suche nicht aus dem Cache: %v", time.Since(start))
+		}
+		if i == 1 {
+			got, isErr := c.callTool("contacts_get", map[string]any{"id": extractIDs(out)[0]})
+			if isErr || !strings.Contains(got, "@") {
+				t.Errorf("contacts_get: %.300s", got)
+			}
+		}
+	}
+
+	if out, isErr := c.callTool("contacts_list", map[string]any{"top": 3}); isErr {
+		t.Errorf("contacts_list: %s", out)
+	}
+
+	// Absender mit SMTP-Adresse.
+	list, _ := c.callTool("mail_list", map[string]any{"top": 5})
+	if ids := extractIDs(list); len(ids) > 0 {
+		read, _ := c.callTool("mail_read", map[string]any{"ids": ids})
+		if !strings.Contains(read, "@") || strings.Contains(read, "<\n") {
+			t.Errorf("Absender ohne SMTP: %.300s", read)
+		}
+	}
+
+	// Sandbox: ausserhalb des Profils wird abgelehnt.
+	if ids := extractIDs(list); len(ids) > 0 {
+		out, isErr := c.callTool("mail_save_attachment", map[string]any{"id": ids[0], "dir": `C:\Windows\Temp\ocm-test`})
+		if !isErr || !strings.Contains(out, "outside the allowed folders") {
+			t.Errorf("Sandbox greift nicht: %.300s", out)
+		}
+	}
+}
+
+// Eigene Kontakte live: legt einen Testkontakt an, findet ihn ueber den
+// DASL-Filter und loescht ihn wieder (landet in "Gelöschte Elemente").
+//
+//	$env:OUTLOOK_MCP_LIVE_WRITE = "1"; go test -run TestLiveWriteContacts -v .
+func TestLiveWriteContacts(t *testing.T) {
+	if os.Getenv("OUTLOOK_MCP_LIVE_WRITE") == "" {
+		t.Skip("OUTLOOK_MCP_LIVE_WRITE nicht gesetzt — schreibender Live-Test uebersprungen")
+	}
+	const tag = "Ocmtestkontakt"
+	var id string
+	_, err := outlook.call(context.Background(), "contacts_list", map[string]any{"top": 1}) // Verbindung aufbauen
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outlook.stop()
+	err = liveCOM(func(s *session) error {
+		c, err := callObj(s.ol, "CreateItem", 2) // olContactItem
+		if err != nil {
+			return err
+		}
+		c.put("FullName", "Zora "+tag)
+		c.put("CompanyName", "Example Ltd")
+		c.put("Email1Address", "zora@example.invalid")
+		if _, err := c.call("Save"); err != nil {
+			return err
+		}
+		id = str(field(c, "EntryID"))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer liveCOM(func(s *session) error {
+		c, err := callObj(s.ns, "GetItemFromID", id)
+		if err == nil {
+			_, err = c.call("Delete")
+		}
+		t.Logf("Aufraeumen: %v", err)
+		return nil
+	})
+	for _, q := range []string{tag, "example.invalid", "example ltd " + strings.ToLower(tag)} {
+		out, err := outlook.call(context.Background(), "contacts_search", map[string]any{"query": q, "top": 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, c := range parseJSONLines[contactInfo](out) {
+			found = found || (c.ID == id && c.Email == "zora@example.invalid" && c.Source == "contacts")
+		}
+		if !found {
+			t.Errorf("Testkontakt mit %q nicht gefunden: %s", q, out)
+		}
+	}
+}
+
+// liveCOM fuehrt fn auf einem eigenen STA-Thread mit eigener Verbindung aus —
+// fuer Testaufbau, den kein Tool kann (Kontakt anlegen).
+func liveCOM(fn func(*session) error) error {
+	done := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		ole.CoInitializeEx(0, ole.COINIT_APARTMENTTHREADED)
+		defer ole.CoUninitialize()
+		be, err := dialOutlook()
+		if err != nil {
+			done <- err
+			return
+		}
+		defer be.close()
+		ol, ns := be.begin()
+		defer be.end()
+		done <- fn(&session{ol: ol, ns: ns})
+	}()
+	return <-done
 }

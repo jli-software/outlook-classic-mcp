@@ -95,6 +95,12 @@ func fakeItems(mails []*fake) *fake {
 	it.on("GetFirst", func(args ...any) (any, error) { pos = 0; return next() })
 	it.on("GetNext", next)
 	it.on("Sort", func(args ...any) (any, error) {
+		if args[0] == "[Subject]" {
+			sort.SliceStable(list, func(i, j int) bool {
+				return list[i].props["Subject"].(string) < list[j].props["Subject"].(string)
+			})
+			return nil, nil
+		}
 		sort.SliceStable(list, func(i, j int) bool {
 			return list[i].props["ReceivedTime"].(time.Time).After(list[j].props["ReceivedTime"].(time.Time))
 		})
@@ -104,7 +110,7 @@ func fakeItems(mails []*fake) *fake {
 		m := regexp.MustCompile(`LIKE '%(.*?)%'`).FindStringSubmatch(args[0].(string))
 		var hit []*fake
 		for _, x := range list {
-			if strings.Contains(x.props["Subject"].(string), m[1]) {
+			if strings.Contains(strings.ToLower(x.props["Subject"].(string)), strings.ToLower(m[1])) {
 				hit = append(hit, x)
 			}
 		}
@@ -120,10 +126,13 @@ type mailbox struct {
 	byID   map[string]*fake
 	dflt   map[int]*fake
 	nextID int
+	gal    []*fake          // Firmen-Adressbuch
+	known  map[string]*fake // was CreateRecipient(...).Resolve() eindeutig findet
+	scans  int              // Durchlaeufe ueber die GAL (GetFirst)
 }
 
 func newMailbox() *mailbox {
-	mb := &mailbox{byID: map[string]*fake{}, dflt: map[int]*fake{}}
+	mb := &mailbox{byID: map[string]*fake{}, dflt: map[int]*fake{}, known: map[string]*fake{}}
 	mb.root = mb.folder(nil, "user@example.com", 0)
 	store := newFake(nil).on("GetRootFolder", func(...any) (any, error) { return mb.root, nil })
 
@@ -147,7 +156,41 @@ func newMailbox() *mailbox {
 		return nil, &comError{0x8004010F, "Die Nachricht wurde nicht gefunden."}
 	})
 
-	mb.ol = newFake(nil).on("CreateItem", func(...any) (any, error) {
+	mb.ns.on("GetAddressEntryFromID", func(args ...any) (any, error) {
+		for _, e := range mb.gal {
+			if e.props["ID"] == args[0] {
+				return e, nil
+			}
+		}
+		return nil, &comError{0x80040107, "Ungültige ID."}
+	})
+	mb.ns.on("GetGlobalAddressList", func(...any) (any, error) {
+		ents := fakeItems(mb.gal)
+		first := ents.meths["GetFirst"]
+		ents.on("GetFirst", func(args ...any) (any, error) { mb.scans++; return first(args...) })
+		return newFake(map[string]any{"Name": "Global Address List", "AddressEntries": ents}), nil
+	})
+	mb.ns.on("CreateRecipient", func(args ...any) (any, error) {
+		name := args[0].(string)
+		r := newFake(map[string]any{"Name": name, "Address": ""})
+		r.on("Resolve", func(...any) (any, error) {
+			ae, ok := mb.known[strings.ToLower(name)]
+			if ok {
+				r.props["AddressEntry"] = ae
+				r.props["Name"] = ae.props["Name"]
+			}
+			return ok, nil
+		})
+		return r, nil
+	})
+	// Namespace.CurrentUser bricht wie am echten Outlook kurz nach dem Start ab.
+	mb.ns.on("CurrentUser", func(...any) (any, error) { return nil, &comError{0x80004004, "Vorgang abgebrochen"} })
+	me := newFake(map[string]any{"Name": "Test User"})
+	accs := []*fake{newFake(map[string]any{"SmtpAddress": "user@example.com", "CurrentUser": me})}
+	mb.ns.props["Accounts"] = fakeCol(&accs)
+	mb.ns.props["ExchangeConnectionMode"] = 700
+
+	mb.ol = newFake(map[string]any{"Version": "16.0.0.1"}).on("CreateItem", func(...any) (any, error) {
 		return mb.mail(nil, "", time.Time{}), nil
 	})
 	return mb
@@ -189,6 +232,7 @@ func (mb *mailbox) mail(folder *fake, subject string, received time.Time) *fake 
 		"Subject": subject, "SenderName": "Absender", "To": "user@example.com",
 		"ReceivedTime": received, "Body": "Text von " + subject, "UnRead": true,
 		"BodyFormat": 1, "Categories": "",
+		"SenderEmailType": "SMTP", "SenderEmailAddress": "sender@example.com",
 	})
 	m.props["Attachments"] = fakeCol(&atts)
 	m.props["_atts"] = &atts
@@ -228,7 +272,37 @@ func (mb *mailbox) mail(folder *fake, subject string, received time.Time) *fake 
 	return m
 }
 
-func (mb *mailbox) session() *session { return &session{ol: mb.ol, ns: mb.ns} }
+// person legt einen Exchange-Benutzer im Firmen-Adressbuch an. Address ist
+// wie echt nur der X.500-Name; die SMTP-Adresse gibt es ueber GetExchangeUser.
+func (mb *mailbox) person(name, smtp, dept string) *fake {
+	xu := newFake(map[string]any{
+		"PrimarySmtpAddress": smtp, "Department": dept, "CompanyName": "Example Ltd",
+		"BusinessTelephoneNumber": "+41 00 000 00 00",
+		"StreetAddress":           "Street 1", "PostalCode": "8000", "City": "Zurich",
+	})
+	e := newFake(map[string]any{
+		"Name": name, "ID": mb.id("GAL"), "AddressEntryUserType": olExchangeUserAddressEntry,
+		"Type": "EX", "Address": "/O=EXAMPLE/OU=EXCHANGE/CN=RECIPIENTS/CN=" + strings.ToUpper(smtp),
+	})
+	e.on("GetExchangeUser", func(...any) (any, error) { return xu, nil })
+	mb.gal = append(mb.gal, e)
+	return e
+}
+
+// contact legt einen eigenen Kontakt an (Subject = FullName wie in Outlook).
+func (mb *mailbox) contact(folder *fake, name, email, company string) *fake {
+	c := newFake(map[string]any{
+		"EntryID": mb.id("C"), "Class": olContact, "Subject": name, "FullName": name, "FileAs": name,
+		"CompanyName": company, "Email1Address": email, "Email1AddressType": "SMTP",
+		"Body": "Notiz zu " + name, "BusinessAddress": "Weg 2\r\n8000 Zurich",
+	})
+	mb.byID[c.props["EntryID"].(string)] = c
+	ms := folder.props["_mails"].(*[]*fake)
+	*ms = append(*ms, c)
+	return c
+}
+
+func (mb *mailbox) session() *session { return &session{ol: mb.ol, ns: mb.ns, dir: &dirCache{}} }
 
 type fakeBackend struct {
 	mb     *mailbox
