@@ -1,13 +1,18 @@
-# Outlook Classic MCP
+<div align="center">
+  <img src="logo.svg" width="120" alt="Outlook Classic MCP logo" />
+  <h1>Outlook Classic MCP</h1>
+  <p><b>An MCP server for Microsoft Outlook — the classic desktop app for Windows.</b><br/>
+  Let Claude, Codex and other AI assistants read, search and organize your mailbox<br/>
+  and write drafts for you — through the Outlook that is already signed in on your PC.</p>
 
-**An MCP server for Microsoft Outlook — the classic desktop app for Windows.**
-Let Claude, Codex and other AI assistants read, search and organize your mailbox
-and write drafts for you — through the Outlook that is already signed in on your PC.
+  [![Release](https://img.shields.io/github/v/release/jli-software/outlook-classic-mcp?style=flat-square&color=4cc2ff)](https://github.com/jli-software/outlook-classic-mcp/releases/latest)
+  ![Platform](https://img.shields.io/badge/platform-Windows-89b4fa?style=flat-square)
+  ![Outlook](https://img.shields.io/badge/Outlook-classic%20(Win32)-89b4fa?style=flat-square)
+  ![License](https://img.shields.io/badge/license-MIT-a6e3a1?style=flat-square)
+  ![Built with Go](https://img.shields.io/badge/built%20with-Go-f5a97f?style=flat-square)
+</div>
 
-[![Release](https://img.shields.io/github/v/release/jli-software/outlook-classic-mcp)](https://github.com/jli-software/outlook-classic-mcp/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6)
-![Outlook: classic](https://img.shields.io/badge/Outlook-classic%20(Win32)-0F6CBD)
+---
 
 ```
 Claude / Codex  ──MCP──▶  outlook-classic-mcp.exe  ──COM──▶  Outlook (classic)  ──▶  your mailbox

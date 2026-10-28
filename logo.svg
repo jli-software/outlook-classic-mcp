@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#18181c"/>
+      <stop offset="100%" stop-color="#050506"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2c313c"/>
+      <stop offset="100%" stop-color="#11141a"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#9aa3b2"/>
+      <stop offset="50%" stop-color="#e6ebf2"/>
+      <stop offset="100%" stop-color="#8a93a3"/>
+    </linearGradient>
+    <filter id="glow" filterUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+
+  <!-- Plug prongs -->
+  <rect x="210" y="356" width="24" height="70" rx="8" fill="url(#metal)"/>
+  <rect x="278" y="356" width="24" height="70" rx="8" fill="url(#metal)"/>
+
+  <!-- Envelope -->
+  <rect x="88" y="120" width="336" height="240" rx="28" fill="url(#paper)" stroke="#3d4350" stroke-width="4"/>
+
+  <!-- Flap (dim) -->
+  <path d="M112 146 L256 258 L400 146" stroke="#4a5262" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Light pulse running along the flap -->
+  <path d="M112 146 L256 258 L400 146" pathLength="100" stroke="#4cc2ff" stroke-width="12"
+        stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="22 130" filter="url(#glow)">
+    <animate attributeName="stroke-dashoffset" values="22;-108" dur="2.4s"
+             calcMode="spline" keyTimes="0;1" keySplines="0.45 0 0.55 1" repeatCount="indefinite"/>
+  </path>
+
+  <!-- Status LED -->
+  <circle cx="256" cy="318" r="9" fill="#4cc2ff" filter="url(#glow)"/>
+</svg>
