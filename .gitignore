@@ -1,0 +1,7 @@
+*.exe
+*.exe~
+*.bak
+out/
+# Agent-Dateien bleiben lokal (oeffentliches Repo)
+AGENTS.md
+CLAUDE.md

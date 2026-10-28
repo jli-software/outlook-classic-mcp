@@ -1,0 +1,269 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+// ---- Datentypen ----
+
+type mailItem struct {
+	ID          string `json:"id"`
+	Subject     string `json:"subject"`
+	From        string `json:"from"`
+	To          string `json:"to"`
+	Received    string `json:"received"`
+	Preview     string `json:"preview"`
+	Body        string `json:"body"`
+	Attachments string `json:"attachments"`
+	Folder      string `json:"folder"`
+	Unread      bool   `json:"unread"`
+	Error       string `json:"error"`
+}
+
+type folderInfo struct {
+	ID     string `json:"id"`
+	Path   string `json:"path"`
+	Name   string `json:"name"`
+	Items  int    `json:"items"`
+	Unread int    `json:"unread"`
+}
+
+type actionResult struct {
+	ID         string `json:"id"`
+	Subject    string `json:"subject"`
+	Path       string `json:"path"`
+	Categories string `json:"categories"`
+	Unread     bool   `json:"unread"`
+	Deleted    bool   `json:"deleted"`
+	Error      string `json:"error"`
+}
+
+type attachmentInfo struct {
+	ID       string `json:"id"`
+	Subject  string `json:"subject"`
+	Index    int    `json:"index"`
+	Filename string `json:"filename"`
+	Size     int    `json:"size"`
+	Type     int    `json:"type"`
+	Empty    bool   `json:"empty"`
+	Error    string `json:"error"`
+}
+
+type savedAttachment struct {
+	ID       string `json:"id"`
+	Subject  string `json:"subject"`
+	Filename string `json:"filename"`
+	Path     string `json:"path"`
+	Size     int    `json:"size"`
+	Empty    bool   `json:"empty"`
+	Error    string `json:"error"`
+}
+
+type syncResult struct {
+	Synced      bool `json:"synced"`
+	InboxItems  int  `json:"inbox_items"`
+	InboxUnread int  `json:"inbox_unread"`
+}
+
+// parseJSONLines liest die Ergebniszeilen einer Op. Eine kaputte
+// Zeile wird uebersprungen und reisst nicht den ganzen Request mit.
+func parseJSONLines[T any](data []byte) []T {
+	var out []T
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var v T
+		if json.Unmarshal([]byte(line), &v) == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// runOutlook fuehrt eine Op auf dem STA-Thread aus (sta.go, ops.go) und
+// liefert ihre Ausgabe als JSON Lines.
+func runOutlook(ctx context.Context, op string, params map[string]any) ([]byte, error) {
+	return outlook.call(ctx, op, params)
+}
+
+// ---- Lesen & Suchen ----
+
+func listMessages(ctx context.Context, folder string, top int, withBody bool) ([]mailItem, error) {
+	out, err := runOutlook(ctx, "list", map[string]any{
+		"folder": folder, "top": top, "include_body": withBody,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parseJSONLines[mailItem](out), nil
+}
+
+func searchMessages(ctx context.Context, folder, query string, top int, withBody bool) ([]mailItem, error) {
+	out, err := runOutlook(ctx, "search", map[string]any{
+		"folder": folder, "query": query, "top": top, "include_body": withBody,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parseJSONLines[mailItem](out), nil
+}
+
+func readMessages(ctx context.Context, ids []string) ([]mailItem, error) {
+	out, err := runOutlook(ctx, "read", map[string]any{"ids": ids})
+	if err != nil {
+		return nil, err
+	}
+	items := parseJSONLines[mailItem](out)
+	if len(items) == 0 {
+		return nil, fmt.Errorf("no message found with this ID")
+	}
+	return items, nil
+}
+
+// ---- Entwuerfe ----
+
+func createDraft(ctx context.Context, subject, body string, to, cc, bcc []string) (*mailItem, error) {
+	params := map[string]any{"subject": subject, "body": body, "to": to}
+	if len(cc) > 0 {
+		params["cc"] = cc
+	}
+	if len(bcc) > 0 {
+		params["bcc"] = bcc
+	}
+	return oneItem(ctx, "draft", params, "could not create draft")
+}
+
+// updateDraft erwartet in params bereits nur die Felder, die der Aufrufer
+// wirklich uebergeben hat — in der Op entscheidet die Anwesenheit des
+// Schluessels darueber, ob das Feld angefasst wird.
+func updateDraft(ctx context.Context, params map[string]any) (*mailItem, error) {
+	return oneItem(ctx, "update_draft", params, "could not update draft")
+}
+
+func replyMessage(ctx context.Context, id, body string, replyAll, keepAttach bool, attachments []string) (*mailItem, error) {
+	params := map[string]any{"id": id, "body": body}
+	if replyAll {
+		params["reply_all"] = true
+	}
+	if keepAttach {
+		params["keep_attachments"] = true
+	}
+	if len(attachments) > 0 {
+		params["attachments"] = attachments
+	}
+	return oneItem(ctx, "reply", params, "could not create reply draft")
+}
+
+func oneItem(ctx context.Context, op string, params map[string]any, failMsg string) (*mailItem, error) {
+	out, err := runOutlook(ctx, op, params)
+	if err != nil {
+		return nil, err
+	}
+	items := parseJSONLines[mailItem](out)
+	if len(items) == 0 {
+		return nil, fmt.Errorf("%s", failMsg)
+	}
+	return &items[0], nil
+}
+
+// ---- Sync ----
+
+// syncMailbox stoesst ein Senden/Empfangen an und wartet wait Sekunden, damit
+// der OST-Cache frisch wird (wichtig, wenn das klassische Outlook selten laeuft).
+func syncMailbox(ctx context.Context, wait int) (*syncResult, error) {
+	params := map[string]any{}
+	if wait > 0 {
+		params["wait"] = wait
+	}
+	out, err := runOutlook(ctx, "sync", params)
+	if err != nil {
+		return nil, err
+	}
+	rs := parseJSONLines[syncResult](out)
+	if len(rs) == 0 {
+		return nil, fmt.Errorf("no answer from sync")
+	}
+	return &rs[0], nil
+}
+
+// ---- Ordner & Verwaltung ----
+
+func listFolders(ctx context.Context) ([]folderInfo, error) {
+	out, err := runOutlook(ctx, "folders", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	return parseJSONLines[folderInfo](out), nil
+}
+
+func createFolder(ctx context.Context, parentID, name string) (*folderInfo, error) {
+	out, err := runOutlook(ctx, "create_folder", map[string]any{
+		"parent_id": parentID, "name": name,
+	})
+	if err != nil {
+		return nil, err
+	}
+	fs := parseJSONLines[folderInfo](out)
+	if len(fs) == 0 {
+		return nil, fmt.Errorf("could not create folder")
+	}
+	return &fs[0], nil
+}
+
+func actions(ctx context.Context, op string, params map[string]any) ([]actionResult, error) {
+	out, err := runOutlook(ctx, op, params)
+	if err != nil {
+		return nil, err
+	}
+	rs := parseJSONLines[actionResult](out)
+	if len(rs) == 0 {
+		return nil, fmt.Errorf("no answer from Outlook")
+	}
+	return rs, nil
+}
+
+func moveMessages(ctx context.Context, ids []string, destID string) ([]actionResult, error) {
+	return actions(ctx, "move", map[string]any{"ids": ids, "folder_id": destID})
+}
+
+func markRead(ctx context.Context, ids []string, read bool) ([]actionResult, error) {
+	return actions(ctx, "mark", map[string]any{"ids": ids, "read": read})
+}
+
+func categorize(ctx context.Context, ids []string, categories []string) ([]actionResult, error) {
+	return actions(ctx, "categorize", map[string]any{"ids": ids, "categories": categories})
+}
+
+func deleteMessages(ctx context.Context, ids []string) ([]actionResult, error) {
+	return actions(ctx, "delete", map[string]any{"ids": ids})
+}
+
+// ---- Anhaenge ----
+
+func listAttachments(ctx context.Context, ids []string) ([]attachmentInfo, error) {
+	out, err := runOutlook(ctx, "attachments", map[string]any{"ids": ids})
+	if err != nil {
+		return nil, err
+	}
+	return parseJSONLines[attachmentInfo](out), nil
+}
+
+func saveAttachments(ctx context.Context, ids []string, dir string, index int) ([]savedAttachment, error) {
+	params := map[string]any{"ids": ids}
+	if dir != "" {
+		params["dir"] = dir
+	}
+	if index > 0 {
+		params["index"] = index
+	}
+	out, err := runOutlook(ctx, "save_attachment", params)
+	if err != nil {
+		return nil, err
+	}
+	return parseJSONLines[savedAttachment](out), nil
+}

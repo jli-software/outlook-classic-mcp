@@ -1,0 +1,88 @@
+name: Release
+
+# Tag pushen -> EXE bauen -> GitHub-Release mit Changelog-Abschnitt
+#   git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Tag matches version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^const version = "\(.*\)"/\1/p' main.go)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match main.go ($version)"
+            exit 1
+          fi
+
+      - name: Tests
+        run: |
+          go vet .
+          go build -o outlook-classic-mcp.exe .
+          go test .
+
+      - name: Build release EXE
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p out
+          go build -trimpath -ldflags="-s -w" -o out/outlook-classic-mcp-windows-x64.exe .
+          ./out/outlook-classic-mcp-windows-x64.exe version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exe
+          path: out/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: exe
+          path: out
+
+      - name: Checksums
+        working-directory: out
+        run: sha256sum outlook-classic-mcp-* > SHA256SUMS && cat SHA256SUMS
+
+      - name: Release notes from CHANGELOG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { on=1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          cat >> notes.md <<'EOF'
+
+          ---
+          **Install / update** (PowerShell):
+          ```powershell
+          irm https://raw.githubusercontent.com/jli-software/outlook-classic-mcp/main/install.ps1 | iex
+          ```
+          EOF
+          cat notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --title "outlook-classic-mcp $GITHUB_REF_NAME" --notes-file notes.md --latest
