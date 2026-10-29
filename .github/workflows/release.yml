@@ -50,6 +50,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    outputs:
+      mcpb_sha: ${{ steps.mcpb.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,9 +60,22 @@ jobs:
           name: exe
           path: out
 
+      # MCP-Bundle (.mcpb): fuer Claude Desktop per Doppelklick und das MCP-Registry
+      - name: MCP bundle
+        id: mcpb
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p bundle/server
+          cp mcpb/icon.png bundle/
+          jq --arg v "$version" '.version = $v' mcpb/manifest.json > bundle/manifest.json
+          cp out/outlook-classic-mcp-windows-x64.exe bundle/server/outlook-classic-mcp.exe
+          npx -y @anthropic-ai/mcpb@2.1.2 validate bundle/manifest.json
+          npx -y @anthropic-ai/mcpb@2.1.2 pack bundle out/outlook-classic-mcp.mcpb
+          echo "sha=$(sha256sum out/outlook-classic-mcp.mcpb | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
       - name: Checksums
         working-directory: out
-        run: sha256sum outlook-classic-mcp-* > SHA256SUMS && cat SHA256SUMS
+        run: sha256sum outlook-classic-mcp* > SHA256SUMS && cat SHA256SUMS
 
       - name: Release notes from CHANGELOG
         run: |
@@ -77,6 +92,7 @@ jobs:
           ```powershell
           irm https://raw.githubusercontent.com/jli-software/outlook-classic-mcp/main/install.ps1 | iex
           ```
+          **Claude Desktop:** download `outlook-classic-mcp.mcpb` and open it.
           EOF
           cat notes.md
 
@@ -86,3 +102,48 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" out/* \
             --title "outlook-classic-mcp $GITHUB_REF_NAME" --notes-file notes.md --latest
+
+  # Eintrag im offiziellen MCP-Registry (io.github.jli-software/…), Login per OIDC
+  registry:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Download and verify mcp-publisher
+        run: |
+          set -euo pipefail
+          archive="mcp-publisher_linux_amd64.tar.gz"
+          base_url="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+          curl --fail --location --silent --show-error --output "$archive" "$base_url/$archive"
+          curl --fail --location --silent --show-error --output "$archive.sigstore.json" "$base_url/$archive.sigstore.json"
+          cosign verify-blob \
+            --bundle "$archive.sigstore.json" \
+            --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/${MCP_PUBLISHER_VERSION}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$archive"
+          tar xzf "$archive" mcp-publisher
+
+      - name: Version and checksum into server.json
+        env:
+          SHA: ${{ needs.release.outputs.mcpb_sha }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          url="https://github.com/jli-software/outlook-classic-mcp/releases/download/$GITHUB_REF_NAME/outlook-classic-mcp.mcpb"
+          jq --arg v "$version" --arg u "$url" --arg s "$SHA" \
+            '.version = $v | .packages[0].identifier = $u | .packages[0].fileSha256 = $s' \
+            server.json > server.tmp && mv server.tmp server.json
+          cat server.json
+
+      - name: Publish
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish

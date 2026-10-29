@@ -14,7 +14,7 @@ import (
 
 // version wird bei jeder Aenderung hochgezaehlt; der Release-Workflow prueft,
 // dass der Tag dazu passt.
-const version = "1.3.0"
+const version = "1.3.1"
 
 func main() {
 	if len(os.Args) > 1 {

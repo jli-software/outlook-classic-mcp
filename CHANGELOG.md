@@ -3,7 +3,14 @@
 All notable changes to this project are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.3.1] - 2026-10-29
+
+### Added
+
+- MCP bundle `outlook-classic-mcp.mcpb` with every release: open it in Claude Desktop to
+  install the server as an extension.
+- Listed in the official MCP Registry as `io.github.jli-software/outlook-classic-mcp`,
+  published automatically with each release.
 
 ### Fixed
 

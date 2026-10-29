@@ -1,0 +1,64 @@
+{
+  "manifest_version": "0.3",
+  "name": "outlook-classic-mcp",
+  "display_name": "Outlook Classic",
+  "version": "1.3.1",
+  "description": "Mail, calendar and contacts of the classic Outlook for Windows — through the Outlook already signed in on your PC.",
+  "long_description": "Talks to the running classic Outlook (Win32) via COM and uses its existing session: no Azure app, no Graph API, no tokens. Read, search and organize mail, write drafts and replies, manage the calendar, look up colleagues in the company directory. Nothing is sent: everything outgoing becomes a draft you review in Outlook. Every change is written to a local audit log.",
+  "author": {
+    "name": "JLI-Software",
+    "url": "https://github.com/jli-software"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jli-software/outlook-classic-mcp.git"
+  },
+  "homepage": "https://github.com/jli-software/outlook-classic-mcp",
+  "documentation": "https://github.com/jli-software/outlook-classic-mcp#readme",
+  "support": "https://github.com/jli-software/outlook-classic-mcp/issues",
+  "icon": "icon.png",
+  "license": "MIT",
+  "keywords": ["outlook", "email", "calendar", "contacts", "windows", "com"],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/outlook-classic-mcp.exe",
+    "mcp_config": {
+      "command": "${__dirname}/server/outlook-classic-mcp.exe",
+      "args": ["serve"]
+    }
+  },
+  "tools": [
+    { "name": "mail_list", "description": "Newest emails of a folder" },
+    { "name": "mail_search", "description": "Search subject, sender and body — one folder or all" },
+    { "name": "mail_read", "description": "Full emails with body and attachment names" },
+    { "name": "mail_create_draft", "description": "New draft with To / CC / BCC" },
+    { "name": "mail_update_draft", "description": "Change a draft; in replies only your text is replaced" },
+    { "name": "mail_reply", "description": "Reply draft with thread and quote" },
+    { "name": "mail_forward", "description": "Forward draft with your text above the original" },
+    { "name": "mail_sync", "description": "Trigger Send/Receive to refresh the local cache" },
+    { "name": "mail_folders", "description": "Folder tree with IDs and counts" },
+    { "name": "mail_create_folder", "description": "Create a folder" },
+    { "name": "mail_move", "description": "Move emails to a folder" },
+    { "name": "mail_mark_read", "description": "Mark read / unread" },
+    { "name": "mail_categorize", "description": "Set Outlook categories" },
+    { "name": "mail_delete", "description": "Move to Deleted Items" },
+    { "name": "mail_attachments", "description": "List attachments" },
+    { "name": "mail_save_attachment", "description": "Save attachments to disk" },
+    { "name": "contacts_search", "description": "Find people in your contacts and the company directory" },
+    { "name": "contacts_resolve", "description": "Name to email address, candidates when ambiguous" },
+    { "name": "contacts_get", "description": "All details of a contact or directory entry" },
+    { "name": "contacts_list", "description": "Your own contacts" },
+    { "name": "outlook_whoami", "description": "Signed-in mailbox, Outlook version and server settings" },
+    { "name": "calendar_list", "description": "Appointments in a time range, recurring occurrences included" },
+    { "name": "calendar_get", "description": "Details, attendees with responses, Teams link" },
+    { "name": "calendar_create", "description": "New appointment; meetings are saved, not sent" },
+    { "name": "calendar_update", "description": "Change an appointment, one occurrence or the series" },
+    { "name": "calendar_delete", "description": "Delete appointments or single occurrences" },
+    { "name": "calendar_respond", "description": "Respond to an invitation — saved as a draft" },
+    { "name": "calendar_free_busy", "description": "When colleagues are busy on a given day" }
+  ],
+  "tools_generated": true,
+  "compatibility": {
+    "platforms": ["win32"]
+  }
+}

@@ -56,6 +56,10 @@ This downloads the latest release to `%LOCALAPPDATA%\Programs\outlook-classic-mc
 checks its SHA-256 and registers it as server `outlook` in **Claude Desktop**,
 **Claude Code** and **Codex**. Restart your clients — done.
 
+**Claude Desktop only:** download `outlook-classic-mcp.mcpb` from the
+[latest release](https://github.com/jli-software/outlook-classic-mcp/releases/latest)
+and open it — Claude Desktop installs it as an extension.
+
 <details>
 <summary>Manual install</summary>
 
