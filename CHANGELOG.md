@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- `install.ps1` failed under PowerShell 7 with “No checksum … in SHA256SUMS”, because
+  PowerShell 7 returns the checksum file as bytes. Works in 5.1 and 7 now.
+
 ## [1.3.0] - 2026-10-29
 
 ### Added

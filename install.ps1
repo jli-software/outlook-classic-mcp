@@ -28,6 +28,8 @@ Invoke-WebRequest $exeUrl -OutFile $tmp -UseBasicParsing
 
 # Checksum
 $sums = (Invoke-WebRequest $sumUrl -UseBasicParsing).Content
+# PowerShell 7 returns application/octet-stream as bytes, 5.1 as text.
+if ($sums -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($sums) }
 $line = ($sums -split "`n") | Where-Object { $_ -match [regex]::Escape($asset) } | Select-Object -First 1
 if (-not $line) { Remove-Item $tmp; throw "No checksum for $asset in SHA256SUMS." }
 $want = ($line -split '\s+')[0].ToLower()
