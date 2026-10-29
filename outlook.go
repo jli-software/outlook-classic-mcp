@@ -98,6 +98,51 @@ type whoamiInfo struct {
 	OutlookVersion string `json:"outlook_version"`
 }
 
+// calendarItem ist ein Termin, ein Vorkommen einer Serie (ID mit "|Start"),
+// das Ergebnis einer Schreib-Op oder eine Fehlerzeile.
+type calendarItem struct {
+	ID         string     `json:"id"`
+	Subject    string     `json:"subject"`
+	Start      string     `json:"start"`
+	End        string     `json:"end"`
+	AllDay     bool       `json:"all_day"`
+	Location   string     `json:"location"`
+	ShowAs     string     `json:"show_as"`
+	Meeting    string     `json:"meeting"`
+	Organizer  string     `json:"organizer"`
+	Response   string     `json:"response"`
+	Recurring  bool       `json:"recurring"`
+	Body       string     `json:"body"`
+	Categories string     `json:"categories"`
+	Reminder   *int       `json:"reminder"`
+	TeamsURL   string     `json:"teams_url"`
+	Attendees  []attendee `json:"attendees"`
+	NotSent    bool       `json:"not_sent"`
+	Unresolved string     `json:"unresolved"`
+	Deleted    bool       `json:"deleted"`
+	Note       string     `json:"note"`
+	Error      string     `json:"error"`
+}
+
+type attendee struct {
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Type     string `json:"type"`
+	Response string `json:"response"`
+}
+
+type freeBusy struct {
+	Email string `json:"email"`
+	Name  string `json:"name"`
+	Date  string `json:"date"`
+	Busy  []struct {
+		Start  string `json:"start"`
+		End    string `json:"end"`
+		Status string `json:"status"`
+	} `json:"busy"`
+	Error string `json:"error"`
+}
+
 type syncResult struct {
 	Synced      bool `json:"synced"`
 	InboxItems  int  `json:"inbox_items"`
@@ -340,4 +385,22 @@ func whoami(ctx context.Context) (*whoamiInfo, error) {
 		return nil, fmt.Errorf("no answer from Outlook")
 	}
 	return &rs[0], nil
+}
+
+// ---- Kalender ----
+
+func calendar(ctx context.Context, op string, params map[string]any) ([]calendarItem, error) {
+	out, err := runOutlook(ctx, op, params)
+	if err != nil {
+		return nil, err
+	}
+	return parseJSONLines[calendarItem](out), nil
+}
+
+func freeBusyOf(ctx context.Context, emails []string, date string) ([]freeBusy, error) {
+	out, err := runOutlook(ctx, "calendar_free_busy", map[string]any{"emails": emails, "date": date})
+	if err != nil {
+		return nil, err
+	}
+	return parseJSONLines[freeBusy](out), nil
 }

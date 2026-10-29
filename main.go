@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -12,7 +13,7 @@ import (
 
 // version wird bei jeder Aenderung hochgezaehlt; der Release-Workflow prueft,
 // dass der Tag dazu passt.
-const version = "1.1.0"
+const version = "1.2.0"
 
 func main() {
 	if len(os.Args) > 1 {
@@ -193,6 +194,70 @@ func runServer() {
 	s.AddTool(mcp.NewTool("outlook_whoami",
 		mcp.WithDescription("Shows the signed-in mailbox (name, email), Outlook version and connection state, and this server's settings: whether sending is possible and which folders attachments may be read from or saved to."),
 	), handleWhoami)
+
+	timeDesc := "ISO 8601 in local time, e.g. '2026-10-29T14:00' (an offset like '+01:00' or 'Z' is converted to local time)."
+	calIDDesc := "Calendar item ID from calendar_list. An ID with '|' is one occurrence of a series; without it, the whole series or a single appointment."
+	s.AddTool(mcp.NewTool("calendar_list",
+		mcp.WithDescription("Lists appointments and meetings in the default calendar that overlap a time range (default: today to +7 days), recurring occurrences included, sorted by start. Returns ID, time, subject, location, show-as, organizer and your response."),
+		mcp.WithString("start", mcp.Description("Range start. "+timeDesc+" A date alone = midnight. Default: today 00:00.")),
+		mcp.WithString("end", mcp.Description("Range end. A date alone counts to the end of that day. Default: start + 7 days.")),
+		mcp.WithString("query", mcp.Description("Optional: only items whose subject or location contains all these words.")),
+		mcp.WithNumber("top", mcp.Description("Maximum number of items (default 50, max 200).")),
+	), handleCalendarList)
+
+	s.AddTool(mcp.NewTool("calendar_get",
+		mcp.WithDescription("Shows full details of one or more calendar items: description, attendees with their responses, Teams join link, reminder, categories."),
+		mcp.WithString("id", mcp.Description(calIDDesc)),
+		mcp.WithArray("ids", mcp.WithStringItems(), mcp.Description("Several IDs at once — one Outlook round trip.")),
+	), handleCalendarGet)
+
+	s.AddTool(mcp.NewTool("calendar_create",
+		mcp.WithDescription("Creates an appointment in the default calendar. With attendees it becomes a meeting that is SAVED BUT NOT SENT — the user opens it in Outlook and clicks Send. Resolve names to addresses with contacts_resolve first."),
+		mcp.WithString("subject", mcp.Required(), mcp.Description("Subject.")),
+		mcp.WithString("start", mcp.Required(), mcp.Description("Start. "+timeDesc+" A date alone ('2026-10-29') makes an all-day event.")),
+		mcp.WithString("end", mcp.Description("End (same format). For all-day events a date alone is the last day, inclusive. Default: start + duration.")),
+		mcp.WithNumber("duration", mcp.Description("Length in minutes when no end is given (default 30; all-day: one day).")),
+		mcp.WithBoolean("all_day", mcp.Description("true = all-day event.")),
+		mcp.WithString("location", mcp.Description("Location.")),
+		mcp.WithString("body", mcp.Description("Description (plain text).")),
+		mcp.WithArray("attendees", mcp.WithStringItems(), mcp.Description("Required attendees (email addresses). Makes it a meeting — not sent.")),
+		mcp.WithArray("optional_attendees", mcp.WithStringItems(), mcp.Description("Optional attendees (email addresses).")),
+		mcp.WithString("show_as", mcp.Description("free, tentative, busy (default), oof or elsewhere.")),
+		mcp.WithNumber("reminder", mcp.Description("Reminder in minutes before start; -1 = no reminder. Default: Outlook's setting.")),
+	), handleCalendarCreate)
+
+	s.AddTool(mcp.NewTool("calendar_update",
+		mcp.WithDescription("Changes a calendar item. Only the fields you pass are changed; moving the start keeps the duration. For a series pass an occurrence ID to change only that occurrence. Attendees are NOT notified — for a meeting you organize the user sends the update in Outlook."),
+		mcp.WithString("id", mcp.Required(), mcp.Description(calIDDesc)),
+		mcp.WithString("subject", mcp.Description("New subject.")),
+		mcp.WithString("start", mcp.Description("New start. "+timeDesc)),
+		mcp.WithString("end", mcp.Description("New end.")),
+		mcp.WithNumber("duration", mcp.Description("New length in minutes (instead of end).")),
+		mcp.WithBoolean("all_day", mcp.Description("true/false = make it an all-day event or not.")),
+		mcp.WithString("location", mcp.Description("New location.")),
+		mcp.WithString("body", mcp.Description("New description (plain text). Replaces the whole description, including any Teams join information — leave it out to keep it.")),
+		mcp.WithString("show_as", mcp.Description("free, tentative, busy, oof or elsewhere.")),
+		mcp.WithNumber("reminder", mcp.Description("Reminder in minutes before start; -1 = no reminder.")),
+	), handleCalendarUpdate)
+
+	s.AddTool(mcp.NewTool("calendar_delete",
+		mcp.WithDescription("Deletes one or more calendar items (to Deleted Items). An occurrence ID deletes only that occurrence. A meeting you organize whose invitations were sent is refused (cancelling means sending — the user cancels it in Outlook). Deleting a received meeting does not notify the organizer — use calendar_respond with decline for that."),
+		mcp.WithString("id", mcp.Description(calIDDesc)),
+		mcp.WithArray("ids", mcp.WithStringItems(), mcp.Description("Several IDs at once.")),
+	), handleCalendarDelete)
+
+	s.AddTool(mcp.NewTool("calendar_respond",
+		mcp.WithDescription("Answers a meeting invitation you received: accept, tentative or decline. The response is saved as a DRAFT and NOT sent — the user sends it from Drafts."),
+		mcp.WithString("id", mcp.Required(), mcp.Description(calIDDesc)),
+		mcp.WithString("response", mcp.Required(), mcp.Description("accept, tentative or decline.")),
+		mcp.WithString("comment", mcp.Description("Optional message to the organizer.")),
+	), handleCalendarRespond)
+
+	s.AddTool(mcp.NewTool("calendar_free_busy",
+		mcp.WithDescription("Shows when people are busy on one day (free/busy from Exchange, in 30-minute blocks) — e.g. to find a time for a meeting. Works for colleagues in your organization; external addresses usually have no data."),
+		mcp.WithArray("emails", mcp.Required(), mcp.WithStringItems(), mcp.Description("Email addresses (resolve names with contacts_resolve first).")),
+		mcp.WithString("date", mcp.Description("Day, e.g. '2026-10-29'. Default: today.")),
+	), handleCalendarFreeBusy)
 
 	if err := server.ServeStdio(s); err != nil {
 		fmt.Fprintln(os.Stderr, "Server error:", err)
@@ -747,6 +812,278 @@ func handleWhoami(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResu
 		fmt.Fprintf(&b, "Attachment paths: only under %s\n", strings.Join(allowedRoots(), ", "))
 	} else {
 		fmt.Fprintf(&b, "Attachment paths: any (%s=1)\n", allowAnyPathEnv)
+	}
+	return mcp.NewToolResultText(b.String()), nil
+}
+
+// ---- Kalender ----
+
+// passArgs reicht nur die uebergebenen Argumente weiter — die Ops
+// entscheiden ueber die Anwesenheit des Schluessels (pHas).
+func passArgs(r mcp.CallToolRequest, keys ...string) map[string]any {
+	args := r.GetArguments()
+	p := map[string]any{}
+	for _, k := range keys {
+		if v, ok := args[k]; ok && v != nil {
+			p[k] = v
+		}
+	}
+	return p
+}
+
+func showTime(iso string, withTime bool) string {
+	t, err := time.Parse(time.RFC3339, iso)
+	if err != nil {
+		return iso
+	}
+	if withTime {
+		return t.Format("Mon 2006-01-02 15:04")
+	}
+	return t.Format("Mon 2006-01-02")
+}
+
+func clock(iso string) string {
+	t, err := time.Parse(time.RFC3339, iso)
+	if err != nil {
+		return iso
+	}
+	return t.Format("15:04")
+}
+
+func calWhen(c calendarItem) string {
+	from := showTime(c.Start, false)
+	if c.AllDay {
+		// Das Ende ist Mitternacht nach dem letzten Tag.
+		if t, err := time.Parse(time.RFC3339, c.End); err == nil {
+			if last := t.AddDate(0, 0, -1).Format("Mon 2006-01-02"); last != from {
+				return from + " – " + last + ", all day"
+			}
+		}
+		return from + ", all day"
+	}
+	if showTime(c.End, false) == from {
+		return showTime(c.Start, true) + "–" + clock(c.End)
+	}
+	return showTime(c.Start, true) + " – " + showTime(c.End, true)
+}
+
+func formatCalendar(cs []calendarItem, full bool) string {
+	var b strings.Builder
+	n := 0
+	for _, c := range cs {
+		if c.Error != "" {
+			fmt.Fprintf(&b, "✗ %s — %s\n", c.ID, c.Error)
+			continue
+		}
+		n++
+		if full && n > 1 {
+			b.WriteString("\n" + strings.Repeat("─", 60) + "\n\n")
+		}
+		fmt.Fprintf(&b, "%d. %s  %s\n", n, calWhen(c), c.Subject)
+		var info []string
+		if c.Location != "" {
+			info = append(info, "Location: "+c.Location)
+		}
+		info = append(info, c.ShowAs)
+		switch c.Meeting {
+		case "organizer":
+			info = append(info, "meeting, you organize")
+		case "attendee":
+			info = append(info, fmt.Sprintf("meeting by %s, your response: %s", c.Organizer, c.Response))
+		case "canceled":
+			info = append(info, "CANCELED by "+c.Organizer)
+		}
+		if c.Recurring {
+			info = append(info, "recurring")
+		}
+		fmt.Fprintf(&b, "   %s\n", strings.Join(info, " | "))
+		if full {
+			for _, a := range c.Attendees {
+				who := a.Name
+				if a.Email != "" && !strings.EqualFold(a.Email, a.Name) {
+					who += " <" + a.Email + ">"
+				}
+				fmt.Fprintf(&b, "   Attendee (%s): %s — %s\n", a.Type, who, a.Response)
+			}
+			if c.TeamsURL != "" {
+				fmt.Fprintf(&b, "   Teams: %s\n", c.TeamsURL)
+			}
+			if c.Reminder != nil && *c.Reminder >= 0 {
+				fmt.Fprintf(&b, "   Reminder: %d min before\n", *c.Reminder)
+			}
+			if c.Categories != "" {
+				fmt.Fprintf(&b, "   Categories: %s\n", c.Categories)
+			}
+		}
+		fmt.Fprintf(&b, "   ID: %s\n", c.ID)
+		if full && strings.TrimSpace(c.Body) != "" {
+			fmt.Fprintf(&b, "\n%s\n", strings.TrimSpace(c.Body))
+		}
+	}
+	return b.String()
+}
+
+// calNotes: was der Benutzer nach einer Schreib-Op wissen muss.
+func calNotes(c calendarItem) string {
+	var b strings.Builder
+	if c.NotSent {
+		b.WriteString("\nInvitations NOT sent — the user opens the meeting in Outlook and clicks Send.")
+	}
+	if c.Unresolved != "" {
+		b.WriteString("\nNot resolved (check these addresses): " + c.Unresolved)
+	}
+	if c.Note != "" {
+		b.WriteString("\nNote: " + c.Note)
+	}
+	return b.String()
+}
+
+func handleCalendarList(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	p := passArgs(r, "start", "end", "query")
+	p["top"] = clampN(r.GetInt("top", 50), 50, 200)
+	cs, err := calendar(ctx, "calendar_list", p)
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("calendar_list failed", err), nil
+	}
+	if out := formatCalendar(cs, false); out != "" {
+		return mcp.NewToolResultText(out), nil
+	}
+	return mcp.NewToolResultText("No calendar items in this range."), nil
+}
+
+func handleCalendarGet(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ids, err := collectIDs(r)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	cs, err := calendar(ctx, "calendar_get", map[string]any{"ids": ids})
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("calendar_get failed", err), nil
+	}
+	if out := formatCalendar(cs, true); out != "" {
+		return mcp.NewToolResultText(out), nil
+	}
+	return mcp.NewToolResultText("No calendar item found."), nil
+}
+
+var calFields = []string{"subject", "start", "end", "duration", "all_day", "location", "body", "show_as", "reminder"}
+
+func handleCalendarCreate(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if s, err := r.RequireString("subject"); err != nil || strings.TrimSpace(s) == "" {
+		return mcp.NewToolResultError("parameter 'subject' is missing or empty."), nil
+	}
+	if _, err := r.RequireString("start"); err != nil {
+		return mcp.NewToolResultError("parameter 'start' is missing."), nil
+	}
+	cs, err := calendar(ctx, "calendar_create", passArgs(r, append(calFields, "attendees", "optional_attendees")...))
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("calendar_create failed", err), nil
+	}
+	if len(cs) == 0 {
+		return mcp.NewToolResultError("calendar_create: no answer from Outlook"), nil
+	}
+	head := "Appointment created."
+	if cs[0].NotSent {
+		head = "Meeting saved in the calendar."
+	}
+	return mcp.NewToolResultText(head + "\n" + formatCalendar(cs, false) + calNotes(cs[0])), nil
+}
+
+func handleCalendarUpdate(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := r.RequireString("id")
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("parameter 'id' is missing", err), nil
+	}
+	p := passArgs(r, calFields...)
+	if len(p) == 0 {
+		return mcp.NewToolResultError("Nothing to update — pass at least one field (" + strings.Join(calFields, "/") + ")."), nil
+	}
+	p["id"] = id
+	cs, err := calendar(ctx, "calendar_update", p)
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("calendar_update failed", err), nil
+	}
+	if len(cs) == 0 {
+		return mcp.NewToolResultError("calendar_update: no answer from Outlook"), nil
+	}
+	return mcp.NewToolResultText("Calendar item updated.\n" + formatCalendar(cs, false) + calNotes(cs[0])), nil
+}
+
+func handleCalendarDelete(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ids, err := collectIDs(r)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	cs, err := calendar(ctx, "calendar_delete", map[string]any{"ids": ids})
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("calendar_delete failed", err), nil
+	}
+	var b strings.Builder
+	ok, fail := 0, 0
+	for _, c := range cs {
+		if c.Error != "" {
+			fail++
+			fmt.Fprintf(&b, "✗ %s — %s\n", c.ID, c.Error)
+			continue
+		}
+		ok++
+		fmt.Fprintf(&b, "✓ Deleted: %s\n", c.Subject)
+		if c.Note != "" {
+			fmt.Fprintf(&b, "   Note: %s\n", c.Note)
+		}
+	}
+	if len(cs) > 1 {
+		fmt.Fprintf(&b, "\n%d succeeded, %d failed.\n", ok, fail)
+	}
+	return mcp.NewToolResultText(b.String()), nil
+}
+
+func handleCalendarRespond(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := r.RequireString("id")
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("parameter 'id' is missing", err), nil
+	}
+	resp, err := r.RequireString("response")
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("parameter 'response' is missing", err), nil
+	}
+	cs, err := calendar(ctx, "calendar_respond", map[string]any{"id": id, "response": resp, "comment": r.GetString("comment", "")})
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("calendar_respond failed", err), nil
+	}
+	if len(cs) == 0 {
+		return mcp.NewToolResultError("calendar_respond: no answer from Outlook"), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Response (%s) saved as a draft — NOT sent. The user sends it from Drafts.\nSubject: %s\nID: %s",
+		cs[0].Response, cs[0].Subject, cs[0].ID)), nil
+}
+
+func handleCalendarFreeBusy(ctx context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	emails := r.GetStringSlice("emails", nil)
+	if len(emails) == 0 {
+		return mcp.NewToolResultError("parameter 'emails' is missing or empty."), nil
+	}
+	fbs, err := freeBusyOf(ctx, emails, r.GetString("date", ""))
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("calendar_free_busy failed", err), nil
+	}
+	var b strings.Builder
+	for _, f := range fbs {
+		if f.Error != "" {
+			fmt.Fprintf(&b, "✗ %s — %s\n", f.Email, f.Error)
+			continue
+		}
+		who := f.Email
+		if f.Name != "" && !strings.EqualFold(f.Name, f.Email) {
+			who = f.Name + " <" + f.Email + ">"
+		}
+		fmt.Fprintf(&b, "%s, %s:\n", who, f.Date)
+		if len(f.Busy) == 0 {
+			b.WriteString("   free all day\n")
+		}
+		for _, x := range f.Busy {
+			fmt.Fprintf(&b, "   %s–%s %s\n", clock(x.Start), clock(x.End), x.Status)
+		}
 	}
 	return mcp.NewToolResultText(b.String()), nil
 }

@@ -79,6 +79,20 @@ func (s *session) do(op string, p map[string]any) error {
 		return s.contactsList(p)
 	case "whoami":
 		return s.whoami()
+	case "calendar_list":
+		return s.calendarList(p)
+	case "calendar_get":
+		return s.calendarGet(p)
+	case "calendar_create":
+		return s.calendarCreate(p)
+	case "calendar_update":
+		return s.calendarUpdate(p)
+	case "calendar_delete":
+		return s.calendarDelete(p)
+	case "calendar_respond":
+		return s.calendarRespond(p)
+	case "calendar_free_busy":
+		return s.calendarFreeBusy(p)
 	}
 	return fmt.Errorf("unknown operation: %s", op)
 }

@@ -2,7 +2,7 @@
   <img src="logo.svg" width="120" alt="Outlook Classic MCP logo" />
   <h1>Outlook Classic MCP</h1>
   <p><b>An MCP server for Microsoft Outlook — the classic desktop app for Windows.</b><br/>
-  Let Claude, Codex and other AI assistants read, search and organize your mailbox,<br/>
+  Let Claude, Codex and other AI assistants read, search and organize your mailbox and calendar,<br/>
   look up colleagues and write drafts for you — through the Outlook that is already signed in on your PC.</p>
 
   [![Release](https://img.shields.io/github/v/release/jli-software/outlook-classic-mcp?style=flat-square&color=4cc2ff)](https://github.com/jli-software/outlook-classic-mcp/releases/latest)
@@ -25,7 +25,8 @@ Claude / Codex  ──MCP──▶  outlook-classic-mcp.exe  ──COM──▶ 
 - **Works where Microsoft Graph is blocked** — e.g. by Conditional Access or token
   protection policies. If Outlook works on your PC, this works.
 - **Local only.** Your mail never leaves your machine except to the AI client you use.
-- **Never sends.** Everything outgoing becomes a draft you review and send yourself.
+- **Never sends.** Everything outgoing becomes a draft you review and send yourself —
+  meeting invitations and replies to invitations included.
 - **Files stay fenced in.** Attachments can only be added from — and saved to — your user
   profile and `%TEMP%`, so a crafted email can't talk the assistant into attaching
   arbitrary files.
@@ -93,6 +94,8 @@ Add a stdio server to your client's MCP config:
 > “Draft a reply to Anna's last mail: Thursday works, 10am.”
 > “Move all newsletters from this week to Archive and mark them read.”
 > “What's Anna Smith's email and department? Draft her an invite for Friday.”
+> “What's on my calendar this week? When are Anna and Beat both free on Tuesday?”
+> “Move my 2pm dentist appointment to Thursday and set a reminder 1 hour before.”
 
 ## Tools
 
@@ -118,8 +121,22 @@ Add a stdio server to your client's MCP config:
 | `contacts_get` | All details of a contact or directory entry (phones, department, manager, …) |
 | `contacts_list` | Your own contacts |
 | `outlook_whoami` | Signed-in mailbox, Outlook version, connection state and this server's settings |
+| `calendar_list` | Appointments in a time range (default: the next 7 days), recurring occurrences included |
+| `calendar_get` | Details: description, attendees with their responses, Teams link, reminder |
+| `calendar_create` | New appointment; with attendees a meeting that is saved but **not sent** |
+| `calendar_update` | Change time, subject, location, … — one occurrence or the whole series |
+| `calendar_delete` | Delete appointments or single occurrences; refuses sent meetings you organize |
+| `calendar_respond` | Accept / tentative / decline an invitation — the response is saved as a **draft** |
+| `calendar_free_busy` | When colleagues are busy on a given day (30-minute blocks) |
 
-There is deliberately **no send tool**.
+There is deliberately **no send tool**. In the calendar this means: a new meeting stays
+unsent until you click Send in Outlook, a response to an invitation lands in Drafts, and
+changing or deleting a meeting does not notify anyone — deleting a meeting you organize
+whose invitations were already sent is refused, so attendees aren't left with a ghost
+meeting (cancel it in Outlook instead).
+
+Times go in and out as ISO 8601 in your local time (`2026-10-29T14:00`); a date alone
+(`2026-10-29`) makes an all-day event. An offset (`+01:00`, `Z`) is converted to local time.
 
 Email addresses always come back as SMTP addresses (`anna.smith@contoso.com`), also for
 Exchange senders and directory entries — never as `/O=…/CN=…`.

@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-10-29
+
+### Added
+
+- Calendar tools for the default calendar:
+  - `calendar_list`: appointments overlapping a time range (default: today to +7 days),
+    recurring occurrences included, optionally filtered by words in subject/location.
+  - `calendar_get` (batch): description, attendees with SMTP address and response,
+    Teams join link, reminder, categories.
+  - `calendar_create`: appointments and all-day events; with attendees a meeting that is
+    saved but not sent.
+  - `calendar_update`: change only the fields you pass; moving the start keeps the
+    duration; works on a single occurrence of a series.
+  - `calendar_delete` (batch): appointments or single occurrences. Refuses meetings you
+    organize whose invitations were sent, so attendees are never left without a
+    cancellation.
+  - `calendar_respond`: accept, tentative or decline an invitation — saved as a draft,
+    not sent.
+  - `calendar_free_busy`: busy blocks of colleagues on a given day.
+- Times are ISO 8601 in local time, with the local offset in the output.
+
 ## [1.1.0] - 2026-10-28
 
 ### Added

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	ole "github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
@@ -127,6 +128,39 @@ func fromOADate(d float64) time.Time {
 	}
 	return time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC).Add(time.Duration(ms) * time.Millisecond)
 }
+
+// localDate formatiert eine Zeit als Kurzdatum + Uhrzeit ohne Sekunden im
+// Gebietsschema des Benutzers ("29.10.2026 14:30"). Nur so versteht Outlook
+// ein Datum in einem Restrict-Filter mit IncludeRecurrences: ISO liefert
+// dort nichts, mit Sekunden ebenfalls nichts (Falle 18).
+func localDate(t time.Time) string {
+	st := syscall.Systemtime{Year: uint16(t.Year()), Month: uint16(t.Month()), Day: uint16(t.Day()),
+		Hour: uint16(t.Hour()), Minute: uint16(t.Minute())}
+	day := winFormat(getDateFormatEx, 0x1 /* DATE_SHORTDATE */, &st)
+	clock := winFormat(getTimeFormatEx, 0x2 /* TIME_NOSECONDS */, &st)
+	if day == "" || clock == "" {
+		return t.Format("2006-01-02 15:04")
+	}
+	return day + " " + clock
+}
+
+// winFormat ruft GetDateFormatEx/GetTimeFormatEx fuer das Gebietsschema des
+// Benutzers (Name nil). Beide nehmen nur Zeiger und Ganzzahlen — kein
+// double, den syscall unter x64 nicht im XMM-Register uebergeben koennte.
+func winFormat(proc *syscall.LazyProc, flags uintptr, st *syscall.Systemtime) string {
+	buf := make([]uint16, 64)
+	n, _, _ := proc.Call(0, flags, uintptr(unsafe.Pointer(st)), 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), 0)
+	if n == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(buf[:n])
+}
+
+var (
+	kernel32        = syscall.NewLazyDLL("kernel32.dll")
+	getDateFormatEx = kernel32.NewProc("GetDateFormatEx")
+	getTimeFormatEx = kernel32.NewProc("GetTimeFormatEx")
+)
 
 // comArgs reicht Objekte als ihr IDispatch weiter (Move(ziel)).
 func comArgs(args []any) []any {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -177,8 +178,8 @@ func TestToolsListWithoutOutlook(t *testing.T) {
 	if err := json.Unmarshal(raw, &res); err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Tools) != 20 {
-		t.Errorf("got %d Tools, want 20", len(res.Tools))
+	if len(res.Tools) != 27 {
+		t.Errorf("got %d Tools, want 27", len(res.Tools))
 	}
 
 	byName := map[string]int{}
@@ -188,7 +189,8 @@ func TestToolsListWithoutOutlook(t *testing.T) {
 	// Batch-Tools muessen 'id' UND 'ids' anbieten, und 'id' darf nicht mehr
 	// required sein — sonst bricht der Batch-Aufruf.
 	for _, name := range []string{"mail_read", "mail_move", "mail_mark_read",
-		"mail_categorize", "mail_delete", "mail_attachments", "mail_save_attachment", "contacts_get"} {
+		"mail_categorize", "mail_delete", "mail_attachments", "mail_save_attachment", "contacts_get",
+		"calendar_get", "calendar_delete"} {
 		i, ok := byName[name]
 		if !ok {
 			t.Errorf("%s fehlt", name)
@@ -617,4 +619,180 @@ func liveCOM(fn func(*session) error) error {
 		done <- fn(&session{ol: ol, ns: ns})
 	}()
 	return <-done
+}
+
+// Kalender live, nur lesend: diese Woche listen (prueft den Restrict-Filter
+// mit ISO-Datum im echten Gebietsschema), Details holen, Frei/Gebucht der
+// eigenen Adresse.
+//
+//	$env:OUTLOOK_MCP_LIVE = "1"; go test -run TestLiveCalendar -v .
+func TestLiveCalendar(t *testing.T) {
+	requireLive(t)
+	c := startServer(t)
+
+	start := time.Now()
+	list, isErr := c.callTool("calendar_list", map[string]any{"top": 30})
+	if isErr {
+		t.Fatalf("calendar_list: %s", list)
+	}
+	ids := extractIDs(list)
+	t.Logf("calendar_list (7 Tage): %v, %d Termine, davon %d Vorkommen", time.Since(start).Round(time.Millisecond),
+		len(ids), strings.Count(list, "|20"))
+	if len(ids) > 0 {
+		got, isErr := c.callTool("calendar_get", map[string]any{"ids": ids[:min(len(ids), 5)]})
+		if isErr || strings.Contains(got, "✗") {
+			t.Errorf("calendar_get: %.600s", got)
+		}
+	}
+
+	who, _ := c.callTool("outlook_whoami", map[string]any{})
+	line := strings.TrimPrefix(strings.SplitN(who, "\n", 2)[0], "Mailbox: ")
+	_, email, _ := strings.Cut(strings.TrimSuffix(line, ">"), " <")
+	// Frei/Gebucht am Tag des ersten Termins mit Uhrzeit, zum Vergleich mit
+	// dem Kalender (nur Zeiten ins Log, keine Betreffs).
+	date := time.Now().Format("2006-01-02")
+	if m := regexp.MustCompile(`\d{4}-\d\d-\d\d \d\d:\d\d`).FindString(list); m != "" {
+		date = m[:10]
+	}
+	fb, isErr := c.callTool("calendar_free_busy", map[string]any{"emails": []string{email}, "date": date})
+	if isErr || strings.Contains(fb, "✗") {
+		t.Errorf("calendar_free_busy: %s", fb)
+	}
+	day, _ := c.callTool("calendar_list", map[string]any{"start": date, "end": date})
+	var times []string
+	for _, l := range strings.Split(day, "\n") {
+		if m := regexp.MustCompile(`^\d+\. (.*?)  `).FindStringSubmatch(l); m != nil {
+			times = append(times, m[1])
+			if !strings.Contains(m[1], date) {
+				t.Errorf("Termin ausserhalb des Tages: %s", m[1])
+			}
+		}
+	}
+	_, fbTimes, _ := strings.Cut(fb, "\n")
+	t.Logf("%s — Frei/Gebucht:\n%sKalender: %v", date, fbTimes, times)
+}
+
+// Kalender schreibend: Termin anlegen, verschieben, loeschen; ungesendete
+// Besprechung anlegen und loeschen; Serie (per COM angelegt) — ein
+// Vorkommen verschieben, wiederfinden, loeschen. Alles am Testtag in einem
+// Jahr, ohne Erinnerung, danach geloescht. Nie gesendet.
+//
+//	$env:OUTLOOK_MCP_LIVE_WRITE = "1"; go test -run TestLiveWriteCalendar -v .
+func TestLiveWriteCalendar(t *testing.T) {
+	if os.Getenv("OUTLOOK_MCP_LIVE_WRITE") == "" {
+		t.Skip("OUTLOOK_MCP_LIVE_WRITE nicht gesetzt — schreibender Live-Test uebersprungen")
+	}
+	c := startServer(t)
+	day := time.Now().AddDate(1, 0, 0)
+	for day.Weekday() != time.Sunday {
+		day = day.AddDate(0, 0, 1)
+	}
+	d := day.Format("2006-01-02")
+	var created []string
+	defer func() {
+		for _, id := range created {
+			out, isErr := c.callTool("calendar_delete", map[string]any{"id": id})
+			t.Logf("Aufraeumen %s: %s (Fehler: %v)", id, strings.TrimSpace(out), isErr)
+		}
+	}()
+	idOf := func(text string) string {
+		ids := extractIDs(text)
+		if len(ids) == 0 {
+			t.Fatalf("keine ID in %q", text)
+		}
+		return ids[0]
+	}
+
+	out, isErr := c.callTool("calendar_create", map[string]any{
+		"subject": "outlook-classic-mcp live test – please ignore", "start": d + "T06:00", "duration": 45,
+		"location": "Nowhere", "body": "Grüsse ✓", "reminder": -1, "show_as": "free",
+	})
+	if isErr {
+		t.Fatalf("calendar_create: %s", out)
+	}
+	appt := idOf(out)
+	created = append(created, appt)
+
+	out, isErr = c.callTool("calendar_update", map[string]any{"id": appt, "start": d + "T07:15"})
+	if isErr || !strings.Contains(out, "07:15–08:00") {
+		t.Errorf("calendar_update (Dauer bleibt): %s", out)
+	}
+	list, isErr := c.callTool("calendar_list", map[string]any{"start": d, "end": d})
+	if isErr || !strings.Contains(list, appt) || !strings.Contains(list, "07:15–08:00") {
+		t.Errorf("Termin nicht in calendar_list: %s", list)
+	}
+	got, _ := c.callTool("calendar_get", map[string]any{"id": appt})
+	if !strings.Contains(got, "Grüsse ✓") || strings.Contains(got, "Reminder:") {
+		t.Errorf("calendar_get: %s", got)
+	}
+
+	// Besprechung: gespeichert, nicht gesendet, darf geloescht werden.
+	out, isErr = c.callTool("calendar_create", map[string]any{
+		"subject": "outlook-classic-mcp live meeting – please ignore", "start": d + "T09:00",
+		"attendees": []string{"test@example.invalid"}, "reminder": -1,
+	})
+	if isErr || !strings.Contains(out, "NOT sent") {
+		t.Fatalf("calendar_create (Besprechung): %s", out)
+	}
+	meeting := idOf(out)
+	out, isErr = c.callTool("calendar_delete", map[string]any{"id": meeting})
+	if isErr || !strings.Contains(out, "✓ Deleted") {
+		created = append(created, meeting)
+		t.Errorf("ungesendete Besprechung nicht geloescht (FInvited?): %s", out)
+	}
+
+	// Serie: drei Tage, per COM angelegt (kein Tool legt Serien an).
+	var series string
+	err := liveCOM(func(s *session) error {
+		a, err := callObj(s.ol, "CreateItem", olAppointmentItem)
+		if err != nil {
+			return err
+		}
+		a.put("Subject", "outlook-classic-mcp live series – please ignore")
+		a.put("ReminderSet", false)
+		a.put("BusyStatus", 0)
+		pat, err := callObj(a, "GetRecurrencePattern")
+		if err != nil {
+			return err
+		}
+		pat.put("RecurrenceType", 0) // olRecursDaily
+		pat.put("PatternStartDate", wall(day))
+		pat.put("StartTime", time.Date(1899, 12, 30, 10, 0, 0, 0, time.UTC))
+		pat.put("Duration", 30)
+		pat.put("Occurrences", 3)
+		if _, err := a.call("Save"); err != nil {
+			return err
+		}
+		series = str(field(a, "EntryID"))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Serie anlegen: %v", err)
+	}
+	created = append(created, series)
+	end := day.AddDate(0, 0, 3).Format("2006-01-02")
+	list, _ = c.callTool("calendar_list", map[string]any{"start": d, "end": end, "query": "live series"})
+	occ := extractIDs(list)
+	if len(occ) != 3 || !strings.HasPrefix(occ[1], series+"|") {
+		t.Fatalf("Vorkommen: %v\n%s", occ, list)
+	}
+	out, isErr = c.callTool("calendar_update", map[string]any{"id": occ[1], "start": day.AddDate(0, 0, 1).Format("2006-01-02") + "T11:30"})
+	if isErr {
+		t.Fatalf("Vorkommen verschieben: %s", out)
+	}
+	moved := idOf(out)
+	if !strings.HasSuffix(moved, "T11:30") {
+		t.Errorf("verschobenes Vorkommen: %s", moved)
+	}
+	// Ausnahme: nur ueber den aktuellen Beginn auffindbar (Exceptions-Rueckfall).
+	if got, isErr := c.callTool("calendar_get", map[string]any{"id": moved}); isErr || strings.Contains(got, "✗") {
+		t.Errorf("Ausnahme nicht gefunden: %s", got)
+	}
+	if out, isErr = c.callTool("calendar_delete", map[string]any{"id": occ[2]}); isErr || strings.Contains(out, "✗") {
+		t.Errorf("Vorkommen loeschen: %s", out)
+	}
+	list, _ = c.callTool("calendar_list", map[string]any{"start": d, "end": end, "query": "live series"})
+	if n := len(extractIDs(list)); n != 2 || !strings.Contains(list, "11:30") {
+		t.Errorf("nach Verschieben/Loeschen %d Vorkommen:\n%s", n, list)
+	}
 }
