@@ -174,12 +174,12 @@ func TestReadBatchIsolatesPerIDErrors(t *testing.T) {
 // Ein fehlendes cc darf keinen leeren Empfaenger setzen (frueher Falle 3).
 func TestDraftSetsOnlyGivenRecipients(t *testing.T) {
 	b := newTestBox()
-	got := run(t, b.session(), "draft", map[string]any{"subject": "Hallo", "body": "Text", "to": []string{"a@b.ch", "c@d.ch"}})
+	got := run(t, b.session(), "draft", map[string]any{"subject": "Hallo", "body": "Text", "to": []string{"a@example.com", "c@example.com"}})
 	if len(got) != 1 || got[0].ID == "" || got[0].Subject != "Hallo" {
 		t.Fatalf("Entwurf nicht gespeichert: %+v", got)
 	}
 	m := b.byID[got[0].ID]
-	if m.props["To"] != "a@b.ch;c@d.ch" {
+	if m.props["To"] != "a@example.com;c@example.com" {
 		t.Errorf("To: %v", m.props["To"])
 	}
 	if m.wasPut("CC") || m.wasPut("BCC") {

@@ -33,7 +33,26 @@ Claude / Codex  ──MCP──▶  outlook-classic-mcp.exe  ──COM──▶ 
 - **Files stay fenced in.** Attachments can only be added from — and saved to — your user
   profile and `%TEMP%`, so a crafted email can't talk the assistant into attaching
   arbitrary files.
-- **One small EXE.** No PowerShell, no runtime, no background service.
+- **One small EXE.** No Python, no PowerShell, no runtime, no background service.
+
+## Built for company PCs
+
+Most Outlook MCP servers either need a Python installation on the PC or an app
+registration for Microsoft Graph. On managed Windows devices both are often not an option.
+
+| | outlook-classic-mcp | Python-based COM servers | Graph-based servers |
+|---|---|---|---|
+| What runs on the PC | one EXE | Python + packages | Node.js / Python + packages |
+| App registration / admin consent | none | none | required |
+| Works when Graph is blocked (Conditional Access, token protection) | yes | yes | no |
+| Where your mail goes | stays local | stays local | read through the cloud API |
+| AppLocker / WDAC | one path or hash rule | interpreter must be allowed | interpreter must be allowed |
+| Install without admin rights | yes | depends on Python setup | yes |
+
+For deployment, the EXE needs no installer: copy it to the user's
+`%LOCALAPPDATA%\Programs\outlook-classic-mcp` (e.g. as an Intune Win32 app in user
+context) and run `outlook-classic-mcp.exe install` as the user. The audit log gives IT a
+record of every change the assistant made, and sending stays off unless it is turned on.
 
 ## Requirements
 
