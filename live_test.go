@@ -39,17 +39,17 @@ type rpcClient struct {
 	t      *testing.T
 }
 
-func startServer(t *testing.T) *rpcClient {
+func startServer(t *testing.T, args ...string) *rpcClient {
 	t.Helper()
-	return startServerExe(t, `.\outlook-classic-mcp.exe`)
+	return startServerExe(t, `.\outlook-classic-mcp.exe`, args...)
 }
 
-func startServerExe(t *testing.T, exe string) *rpcClient {
+func startServerExe(t *testing.T, exe string, args ...string) *rpcClient {
 	t.Helper()
 	if _, err := os.Stat(exe); err != nil {
 		t.Fatalf("%s fehlt — vorher `go build -o outlook-classic-mcp.exe .` ausfuehren", exe)
 	}
-	cmd := exec.Command(exe, "serve")
+	cmd := exec.Command(exe, append([]string{"serve"}, args...)...)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -162,24 +162,53 @@ func (c *rpcClient) callTool(name string, args map[string]any) (string, bool) {
 	return b.String(), res.IsError
 }
 
-// Die Tool-Liste muss auch ohne Outlook stehen — reine Registrierung.
-func TestToolsListWithoutOutlook(t *testing.T) {
-	c := startServer(t)
-	raw := c.rpc("tools/list", map[string]any{})
-	var res struct {
-		Tools []struct {
-			Name        string `json:"name"`
-			InputSchema struct {
-				Properties map[string]json.RawMessage `json:"properties"`
-				Required   []string                   `json:"required"`
-			} `json:"inputSchema"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(raw, &res); err != nil {
+type toolList struct {
+	Tools []struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		InputSchema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+			Required   []string                   `json:"required"`
+		} `json:"inputSchema"`
+	} `json:"tools"`
+}
+
+func listTools(t *testing.T, args ...string) toolList {
+	t.Helper()
+	c := startServer(t, args...)
+	var res toolList
+	if err := json.Unmarshal(c.rpc("tools/list", map[string]any{}), &res); err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Tools) != 27 {
-		t.Errorf("got %d Tools, want 27", len(res.Tools))
+	return res
+}
+
+// Senden ist opt-in: Mit --allow-send kommt genau mail_send_draft dazu, und
+// die Entwurfs-Tools verweisen darauf.
+func TestToolsListAllowSend(t *testing.T) {
+	res := listTools(t, "--allow-send")
+	if len(res.Tools) != 29 {
+		t.Errorf("got %d Tools, want 29", len(res.Tools))
+	}
+	var send []string
+	for _, tool := range res.Tools {
+		if strings.Contains(tool.Name, "send") {
+			send = append(send, tool.Name)
+		}
+		if tool.Name == "mail_reply" && !strings.Contains(tool.Description, "mail_send_draft") {
+			t.Errorf("mail_reply verweist nicht auf mail_send_draft: %s", tool.Description)
+		}
+	}
+	if strings.Join(send, ",") != "mail_send_draft" {
+		t.Errorf("Sende-Tools: %v, want genau mail_send_draft", send)
+	}
+}
+
+// Die Tool-Liste muss auch ohne Outlook stehen — reine Registrierung.
+func TestToolsListWithoutOutlook(t *testing.T) {
+	res := listTools(t)
+	if len(res.Tools) != 28 {
+		t.Errorf("got %d Tools, want 28", len(res.Tools))
 	}
 
 	byName := map[string]int{}
@@ -215,10 +244,13 @@ func TestToolsListWithoutOutlook(t *testing.T) {
 			t.Errorf("%s: 'include_body' fehlt", name)
 		}
 	}
-	// Senden bleibt bewusst unmoeglich.
+	// Ohne --allow-send bleibt Senden unmoeglich.
 	for _, tool := range res.Tools {
 		if strings.Contains(tool.Name, "send") {
-			t.Errorf("Tool %q darf nicht existieren — Senden ist bewusst ausgeschlossen", tool.Name)
+			t.Errorf("Tool %q darf ohne --allow-send nicht existieren", tool.Name)
+		}
+		if strings.Contains(tool.Description, "mail_send_draft") {
+			t.Errorf("%s verweist ohne --allow-send auf mail_send_draft", tool.Name)
 		}
 	}
 }
@@ -301,12 +333,21 @@ func TestLiveReadPath(t *testing.T) {
 	if sep := strings.Count(many, strings.Repeat("─", 60)); sep != n-1 {
 		t.Errorf("mail_read(%d ids): %d Trennlinien, want %d", n, sep, n-1)
 	}
-	t.Logf("mail_read(%d ids): %v  —  %d Einzel-Reads waeren ~%v",
-		n, batch.Round(time.Millisecond), n,
-		(single * time.Duration(n)).Round(time.Millisecond))
-	if batch > single*time.Duration(n) {
-		t.Errorf("Batch (%v) ist nicht schneller als %d Einzel-Reads (~%v)",
-			batch, n, single*time.Duration(n))
+	// Dieselben n Mails einzeln lesen — nicht die erste Mail hochrechnen: die
+	// Mails sind unterschiedlich gross, und eine kleine erste Mail liess den
+	// Batch sonst langsamer aussehen, als er ist.
+	var singles time.Duration
+	for _, id := range ids[:n] {
+		start = time.Now()
+		c.callTool("mail_read", map[string]any{"id": id})
+		singles += time.Since(start)
+	}
+	t.Logf("mail_read(%d ids): %v  —  %d Einzel-Reads: %v",
+		n, batch.Round(time.Millisecond), n, singles.Round(time.Millisecond))
+	// Ein Roundtrip kostet nur wenige ms; der Rest ist Mailgroesse und
+	// Rauschen. Darum 50 % Spielraum — gefangen wird ein echter Rueckfall.
+	if batch > singles*3/2 {
+		t.Errorf("Batch (%v) ist deutlich langsamer als %d Einzel-Reads (%v)", batch, n, singles)
 	}
 
 	// 5. Ungueltige ID im Batch darf die gueltigen nicht mitreissen.
@@ -794,5 +835,107 @@ func TestLiveWriteCalendar(t *testing.T) {
 	list, _ = c.callTool("calendar_list", map[string]any{"start": d, "end": end, "query": "live series"})
 	if n := len(extractIDs(list)); n != 2 || !strings.Contains(list, "11:30") {
 		t.Errorf("nach Verschieben/Loeschen %d Vorkommen:\n%s", n, list)
+	}
+}
+
+// Senden live — sendet WIRKLICH, darum hinter einer eigenen Variable: eine
+// Mail an die eigene Adresse (nie an Dritte), Ablehnung eines unaufgeloesten
+// Empfaengers, Weiterleitungs-Entwurf, Audit-Zeile. Danach werden alle Kopien
+// geloescht (landen in "Gelöschte Elemente").
+//
+//	$env:OUTLOOK_MCP_LIVE_SEND = "1"; go test -run TestLiveSend -v .
+func TestLiveSend(t *testing.T) {
+	if os.Getenv("OUTLOOK_MCP_LIVE_SEND") == "" {
+		t.Skip("OUTLOOK_MCP_LIVE_SEND nicht gesetzt — Live-Test mit echtem Senden uebersprungen")
+	}
+	c := startServer(t, "--allow-send")
+	idOf := func(text string) string {
+		ids := extractIDs(text)
+		if len(ids) == 0 {
+			t.Fatalf("keine ID in %q", text)
+		}
+		return ids[0]
+	}
+	var cleanup []string
+	defer func() {
+		if len(cleanup) > 0 {
+			out, isErr := c.callTool("mail_delete", map[string]any{"ids": cleanup})
+			t.Logf("Aufraeumen: %s (Fehler: %v)", strings.TrimSpace(out), isErr)
+		}
+	}()
+
+	who, isErr := c.callTool("outlook_whoami", map[string]any{})
+	if isErr || !strings.Contains(who, "Sending: on") {
+		t.Fatalf("outlook_whoami: %s", who)
+	}
+	line := strings.TrimPrefix(strings.SplitN(who, "\n", 2)[0], "Mailbox: ")
+	_, email, _ := strings.Cut(strings.TrimSuffix(line, ">"), " <")
+	if !strings.Contains(email, "@") {
+		t.Fatalf("eigene Adresse unbekannt: %q", line)
+	}
+	m := regexp.MustCompile(`Audit log: (.+)`).FindStringSubmatch(who)
+	if m == nil {
+		t.Fatalf("whoami ohne Audit-Log: %s", who)
+	}
+	auditFile := strings.TrimSpace(m[1])
+
+	// Unaufgeloester Empfaenger: nichts geht raus.
+	out, isErr := c.callTool("mail_create_draft", map[string]any{
+		"subject": "outlook-classic-mcp unresolved test – please ignore", "body": "x", "to": []string{"Nobody Unresolvable Ocmtest"},
+	})
+	if isErr {
+		t.Fatalf("create_draft: %s", out)
+	}
+	bad := idOf(out)
+	cleanup = append(cleanup, bad)
+	if out, isErr = c.callTool("mail_send_draft", map[string]any{"id": bad}); !isErr || !strings.Contains(out, "could not be resolved") {
+		t.Errorf("unaufgeloester Empfaenger nicht abgelehnt: %s", out)
+	}
+
+	tag := "ocm-send-" + time.Now().Format("150405")
+	subject := "outlook-classic-mcp send test " + tag + " – please ignore"
+	out, isErr = c.callTool("mail_create_draft", map[string]any{"subject": subject, "body": "Grüsse ✓", "to": []string{email}})
+	if isErr {
+		t.Fatalf("create_draft: %s", out)
+	}
+	draft := idOf(out)
+	start := time.Now()
+	out, isErr = c.callTool("mail_send_draft", map[string]any{"id": draft})
+	if isErr || !strings.Contains(strings.ToLower(out), strings.ToLower(email)) {
+		cleanup = append(cleanup, draft)
+		t.Fatalf("mail_send_draft: %s", out)
+	}
+	t.Logf("mail_send_draft: %v", time.Since(start).Round(time.Millisecond))
+
+	data, _ := os.ReadFile(auditFile)
+	if !strings.Contains(string(data), `"tool":"mail_send_draft"`) || !strings.Contains(string(data), tag) {
+		t.Errorf("Senden nicht im Audit-Log %s", auditFile)
+	}
+
+	// Ankunft abwarten (ohne mail_sync — Outlook liefert selbst aus).
+	var got []string
+	for i := 0; i < 24 && len(got) < 2; i++ {
+		time.Sleep(5 * time.Second)
+		inbox, _ := c.callTool("mail_search", map[string]any{"query": tag, "top": 5})
+		sent, _ := c.callTool("mail_search", map[string]any{"query": tag, "folder": "sentitems", "top": 5})
+		got = append(extractIDs(inbox), extractIDs(sent)...)
+	}
+	cleanup = append(cleanup, got...)
+	t.Logf("nach %v: %d Kopien (Posteingang + Gesendet)", time.Since(start).Round(time.Second), len(got))
+	if len(got) < 2 {
+		t.Errorf("Mail nicht angekommen oder nicht in Gesendet — Postausgang pruefen")
+	}
+
+	// Weiterleiten: nur Entwurf, an eine ungueltige Adresse, wird geloescht.
+	list, _ := c.callTool("mail_list", map[string]any{"top": 1})
+	out, isErr = c.callTool("mail_forward", map[string]any{"id": idOf(list), "to": []string{"test@example.invalid"}, "body": "FYI vom Live-Test"})
+	if isErr {
+		t.Fatalf("mail_forward: %s", out)
+	}
+	fw := idOf(out)
+	cleanup = append(cleanup, fw)
+	read, _ := c.callTool("mail_read", map[string]any{"id": fw})
+	if !strings.Contains(read, "FYI vom Live-Test") || !strings.Contains(read, "test@example.invalid") {
+		t.Errorf("Weiterleitung: %.400s", read)
 	}
 }

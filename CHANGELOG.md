@@ -3,6 +3,30 @@
 All notable changes to this project are documented here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-10-29
+
+### Added
+
+- Opt-in sending: `serve --allow-send` (registered with `install --allow-send`) adds
+  `mail_send_draft`. Without the flag the tool does not exist and sending stays off.
+  `mail_send_draft` only sends emails and meeting responses from the Drafts folder, and
+  only when every recipient resolves — otherwise nothing is sent and the unresolved
+  names are listed. Running `install` without the flag turns sending off again.
+- `mail_forward`: forward draft with your text above the original; HTML, signature
+  and attachments of the original stay.
+- Audit log: every changing action (drafts, send, forward, move, delete, categories,
+  read state, folders, saved attachments, sync, calendar) is written as one JSON line
+  to `%LOCALAPPDATA%\outlook-classic-mcp\audit.log` — time, tool, IDs, recipients,
+  subject, result. Never the message text. `OUTLOOK_MCP_AUDIT_LOG` sets another path
+  or `off`; the file rotates at 5 MB.
+- `outlook_whoami` shows whether sending is on and where the audit log is.
+
+### Changed
+
+- With sending enabled, the draft tools (`mail_create_draft`, `mail_reply`,
+  `mail_forward`, `calendar_respond`) tell the assistant to send only after the user
+  has confirmed the draft.
+
 ## [1.2.0] - 2026-10-29
 
 ### Added

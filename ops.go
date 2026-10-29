@@ -55,6 +55,10 @@ func (s *session) do(op string, p map[string]any) error {
 		return s.updateDraft(p)
 	case "reply":
 		return s.reply(p)
+	case "forward":
+		return s.forward(p)
+	case "send_draft":
+		return s.sendDraft(p)
 	case "folders":
 		return s.folders()
 	case "create_folder":
@@ -514,22 +518,8 @@ func (s *session) reply(p map[string]any) error {
 	if err != nil {
 		return err
 	}
-	// Eigenen Text VOR das automatische Zitat setzen (Thread bleibt erhalten).
-	// Nur Nur-Text-Antworten bekommen den Text als Body.
-	body := pStr(p, "body")
-	if format, _ := getInt(r, "BodyFormat"); format == olFormatHTML {
-		html, err := getString(r, "HTMLBody")
-		if err != nil {
-			return err
-		}
-		if err := r.put("HTMLBody", insertReplyHTML(html, body)); err != nil {
-			return err
-		}
-	} else {
-		old, _ := getString(r, "Body")
-		if err := r.put("Body", body+"\r\n\r\n"+old); err != nil {
-			return err
-		}
+	if err := prependText(r, pStr(p, "body")); err != nil {
+		return err
 	}
 	rAtts, err := getObj(r, "Attachments")
 	if err != nil {
@@ -553,6 +543,145 @@ func (s *session) reply(p map[string]any) error {
 		return err
 	}
 	s.emit(map[string]any{"id": str(field(r, "EntryID")), "subject": str(field(r, "Subject"))})
+	return nil
+}
+
+// prependText setzt den eigenen Text VOR das automatische Zitat einer Antwort
+// oder Weiterleitung (Thread bleibt erhalten). Bei HTML nie Body setzen
+// (Falle 9); nur Nur-Text-Mails bekommen den Text als Body.
+func prependText(r obj, body string) error {
+	if format, _ := getInt(r, "BodyFormat"); format == olFormatHTML {
+		html, err := getString(r, "HTMLBody")
+		if err != nil {
+			return err
+		}
+		return r.put("HTMLBody", insertReplyHTML(html, body))
+	}
+	old, _ := getString(r, "Body")
+	return r.put("Body", body+"\r\n\r\n"+old)
+}
+
+// forward legt einen Weiterleitungs-Entwurf an. Die Anhaenge des Originals
+// nimmt Outlook selbst mit.
+func (s *session) forward(p map[string]any) error {
+	orig, err := callObj(s.ns, "GetItemFromID", pStr(p, "id"))
+	if err != nil {
+		return err
+	}
+	f, err := callObj(orig, "Forward")
+	if err != nil {
+		return err
+	}
+	if err := prependText(f, pStr(p, "body")); err != nil {
+		return err
+	}
+	for _, x := range [][2]string{{"to", "To"}, {"cc", "CC"}, {"bcc", "BCC"}} {
+		if v := strings.Join(pArr(p, x[0]), ";"); v != "" {
+			if err := f.put(x[1], v); err != nil {
+				return err
+			}
+		}
+	}
+	return s.saveDraft(f)
+}
+
+// ---- Senden (nur mit --allow-send) ----
+
+// OlObjectClass der Elemente, die mail_send_draft aus "Entwuerfe" senden darf.
+const (
+	olMail                     = 43
+	olMeetingResponseNegative  = 55
+	olMeetingResponsePositive  = 56
+	olMeetingResponseTentative = 57
+	olCC                       = 2 // OlMailRecipientType; 1 = To
+	olBCC                      = 3
+)
+
+// allowSend wird von `serve --allow-send` gesetzt. Ohne das Flag gibt es
+// mail_send_draft gar nicht; die Op prueft es trotzdem (Falle 21).
+var allowSend bool
+
+// sendDraft verschickt einen Entwurf: nur aus dem Ordner Entwuerfe, nur Mails
+// und Besprechungsantworten, nur mit lauter aufgeloesten Empfaengern. Alles
+// wird VOR Send gelesen — danach liegt das Element im Postausgang und seine
+// EntryID gilt nicht mehr. Ein Wiederholungsversuch nach Send scheitert an
+// der Ordnerpruefung und kann darum nicht doppelt senden.
+func (s *session) sendDraft(p map[string]any) error {
+	if !allowSend {
+		return fmt.Errorf("sending is disabled — the server was not started with --allow-send")
+	}
+	m, err := callObj(s.ns, "GetItemFromID", pStr(p, "id"))
+	if err != nil {
+		return err
+	}
+	drafts, err := callObj(s.ns, "GetDefaultFolder", olFolderDrafts)
+	if err != nil {
+		return err
+	}
+	parent, err := getObj(m, "Parent")
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(str(field(parent, "EntryID")), str(field(drafts, "EntryID"))) {
+		return fmt.Errorf("only items in the Drafts folder can be sent (this one is in %s)", str(field(parent, "Name")))
+	}
+	switch num(field(m, "Class")) {
+	case olMail, olMeetingResponseNegative, olMeetingResponsePositive, olMeetingResponseTentative:
+	default:
+		return fmt.Errorf("only emails and meeting responses can be sent with this tool")
+	}
+	if field(m, "Sent") == true {
+		return fmt.Errorf("this item was already sent")
+	}
+	rs, err := getObj(m, "Recipients")
+	if err != nil {
+		return err
+	}
+	if n, err := getInt(rs, "Count"); err != nil || n == 0 {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("the draft has no recipients")
+	}
+	rs.call("ResolveAll")
+	var to, cc, bcc, unresolved []string
+	err = each(rs, func(r obj) (bool, error) {
+		name := str(field(r, "Name"))
+		if field(r, "Resolved") != true {
+			unresolved = append(unresolved, name)
+			return false, nil
+		}
+		addr := ""
+		if ae, err := getObj(r, "AddressEntry"); err == nil {
+			addr = smtpOf(ae)
+		}
+		if addr == "" {
+			addr = str(field(r, "Address"))
+		}
+		if addr == "" || strings.HasPrefix(addr, "/") {
+			addr = name
+		}
+		switch num(field(r, "Type")) {
+		case olCC:
+			cc = append(cc, addr)
+		case olBCC:
+			bcc = append(bcc, addr)
+		default:
+			to = append(to, addr)
+		}
+		return false, nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(unresolved) > 0 {
+		return fmt.Errorf("not sent — these recipients could not be resolved: %s", strings.Join(unresolved, "; "))
+	}
+	id, subject := str(field(m, "EntryID")), str(field(m, "Subject"))
+	if _, err := m.call("Send"); err != nil {
+		return err
+	}
+	s.emit(map[string]any{"id": id, "subject": subject, "to": to, "cc": cc, "bcc": bcc, "sent": true})
 	return nil
 }
 

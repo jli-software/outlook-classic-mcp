@@ -241,21 +241,35 @@ func (mb *mailbox) mail(folder *fake, subject string, received time.Time) *fake 
 		atts = append(atts, a)
 		return a, nil
 	})
-	m.props["Recipients"] = newFake(nil).on("ResolveAll", func(...any) (any, error) { return true, nil })
+	m.props["Class"] = olMail
+	m.props["Recipients"] = func() any { return fakeRecipients(m) }
 	m.on("Save", func(...any) (any, error) {
 		if m.props["EntryID"] == nil {
 			m.props["EntryID"] = mb.id("NEW")
 			mb.byID[m.props["EntryID"].(string)] = m
+			// Neue Elemente speichert Outlook in "Entwuerfe".
+			if d, ok := mb.dflt[olFolderDrafts]; ok {
+				m.props["Parent"] = d
+			}
 		}
 		return nil, nil
 	})
-	reply := func(...any) (any, error) {
-		r := mb.mail(nil, "AW: "+subject, time.Time{})
-		r.props["BodyFormat"] = olFormatHTML
-		r.props["HTMLBody"] = `<html><body><div class=WordSection1><p>Zitat</p></div></body></html>`
-		return r, nil
+	reply := func(prefix string) func(...any) (any, error) {
+		return func(...any) (any, error) {
+			r := mb.mail(nil, prefix+subject, time.Time{})
+			r.props["BodyFormat"] = olFormatHTML
+			r.props["HTMLBody"] = `<html><body><div class=WordSection1><p>Zitat</p></div></body></html>`
+			return r, nil
+		}
 	}
-	m.on("Reply", reply).on("ReplyAll", reply)
+	m.on("Reply", reply("AW: ")).on("ReplyAll", reply("AW: ")).on("Forward", reply("WG: "))
+	// Send: wie echt wandert das Element in den Postausgang, die EntryID gilt
+	// nicht mehr.
+	m.on("Send", func(...any) (any, error) {
+		m.props["_sent"] = true
+		delete(mb.byID, str(m.props["EntryID"]))
+		return nil, nil
+	})
 	m.on("Delete", func(...any) (any, error) { delete(mb.byID, m.props["EntryID"].(string)); return nil, nil })
 	m.on("Move", func(args ...any) (any, error) {
 		delete(mb.byID, m.props["EntryID"].(string))
@@ -264,12 +278,41 @@ func (mb *mailbox) mail(folder *fake, subject string, received time.Time) *fake 
 		return m, nil
 	})
 	if folder != nil {
+		m.props["Parent"] = folder
 		m.props["EntryID"] = mb.id("M")
 		mb.byID[m.props["EntryID"].(string)] = m
 		ms := folder.props["_mails"].(*[]*fake)
 		*ms = append(*ms, m)
 	}
 	return m
+}
+
+// fakeRecipients baut die Empfaenger aus To/CC/BCC. Aufgeloest ist, was ein
+// "@" enthaelt.
+func fakeRecipients(m *fake) *fake {
+	var list []*fake
+	for _, f := range []struct {
+		prop string
+		kind int
+	}{{"To", 1}, {"CC", olCC}, {"BCC", olBCC}} {
+		for _, a := range strings.Split(str(m.props[f.prop]), ";") {
+			if a = strings.TrimSpace(a); a != "" {
+				list = append(list, newFake(map[string]any{
+					"Name": a, "Address": a, "Type": f.kind, "Resolved": strings.Contains(a, "@"),
+				}))
+			}
+		}
+	}
+	rs := fakeCol(&list)
+	rs.on("ResolveAll", func(...any) (any, error) {
+		for _, r := range list {
+			if r.props["Resolved"] != true {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+	return rs
 }
 
 // person legt einen Exchange-Benutzer im Firmen-Adressbuch an. Address ist

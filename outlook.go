@@ -240,6 +240,39 @@ func replyMessage(ctx context.Context, id, body string, replyAll, keepAttach boo
 	return oneItem(ctx, "reply", params, "could not create reply draft")
 }
 
+func forwardMessage(ctx context.Context, id, body string, to, cc, bcc []string) (*mailItem, error) {
+	params := map[string]any{"id": id, "body": body, "to": to}
+	if len(cc) > 0 {
+		params["cc"] = cc
+	}
+	if len(bcc) > 0 {
+		params["bcc"] = bcc
+	}
+	return oneItem(ctx, "forward", params, "could not create forward draft")
+}
+
+// sentItem: was mail_send_draft verschickt hat, Empfaenger als SMTP.
+type sentItem struct {
+	ID      string   `json:"id"`
+	Subject string   `json:"subject"`
+	To      []string `json:"to"`
+	CC      []string `json:"cc"`
+	BCC     []string `json:"bcc"`
+	Sent    bool     `json:"sent"`
+}
+
+func sendDraft(ctx context.Context, id string) (*sentItem, error) {
+	out, err := runOutlook(ctx, "send_draft", map[string]any{"id": id})
+	if err != nil {
+		return nil, err
+	}
+	rs := parseJSONLines[sentItem](out)
+	if len(rs) == 0 || !rs[0].Sent {
+		return nil, fmt.Errorf("no confirmation from Outlook — check the Outbox before trying again")
+	}
+	return &rs[0], nil
+}
+
 func oneItem(ctx context.Context, op string, params map[string]any, failMsg string) (*mailItem, error) {
 	out, err := runOutlook(ctx, op, params)
 	if err != nil {

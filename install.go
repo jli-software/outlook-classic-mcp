@@ -14,16 +14,18 @@ const serverName = "outlook"
 // runInstall traegt diesen Server automatisch in die Configs von Claude Desktop,
 // Claude Code und Codex ein. Idempotent, mit Backup (.outlook-classic-mcp.bak).
 func runInstall(args []string) {
-	dryRun := false
+	dryRun, send := false, false
 	var only []string
 	for _, a := range args {
 		switch a {
 		case "--print", "-n", "--dry-run":
 			dryRun = true
+		case "--allow-send":
+			send = true
 		case "desktop", "code", "codex":
 			only = append(only, a)
 		default:
-			fmt.Fprintf(os.Stderr, "Unknown argument %q (allowed: --print, desktop, code, codex)\n", a)
+			fmt.Fprintf(os.Stderr, "Unknown argument %q (allowed: --print, --allow-send, desktop, code, codex)\n", a)
 			os.Exit(2)
 		}
 	}
@@ -45,7 +47,18 @@ func runInstall(args []string) {
 		{"codex", "Codex", filepath.Join(home, ".codex", "config.toml"), true},
 	}
 
-	fmt.Printf("Server '%s' -> %s\n", serverName, exe)
+	// Ohne --allow-send wird ein frueher gesetztes Flag bewusst wieder entfernt.
+	serveArgs := []string{"serve"}
+	if send {
+		serveArgs = append(serveArgs, "--allow-send")
+	}
+
+	fmt.Printf("Server '%s' -> %s %s\n", serverName, exe, strings.Join(serveArgs, " "))
+	if send {
+		fmt.Println("Sending ENABLED: mail_send_draft sends drafts after the user confirms. Run install without --allow-send to turn it off.")
+	} else {
+		fmt.Println("Sending off: everything outgoing stays a draft (install --allow-send to enable).")
+	}
 	if dryRun {
 		fmt.Println("(dry run — nothing is written)")
 	}
@@ -61,9 +74,9 @@ func runInstall(args []string) {
 		}
 		var status string
 		if t.toml {
-			status, err = mergeCodexConfig(t.path, exe)
+			status, err = mergeCodexConfig(t.path, exe, serveArgs)
 		} else {
-			status, err = mergeJSONConfig(t.path, exe)
+			status, err = mergeJSONConfig(t.path, exe, serveArgs)
 		}
 		if err != nil {
 			fmt.Printf("  ✗ %-15s %s\n      %v\n", t.label, t.path, err)
@@ -98,7 +111,7 @@ func claudeDesktopPath() string {
 
 // mergeJSONConfig fuegt mcpServers.<serverName> in eine JSON-Config ein.
 // Bestehende Inhalte bleiben erhalten (Round-Trip mit UseNumber).
-func mergeJSONConfig(path, exe string) (string, error) {
+func mergeJSONConfig(path, exe string, args []string) (string, error) {
 	m := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil && len(bytes.TrimSpace(data)) > 0 {
 		dec := json.NewDecoder(bytes.NewReader(data))
@@ -115,7 +128,7 @@ func mergeJSONConfig(path, exe string) (string, error) {
 	_, existed := servers[serverName]
 	servers[serverName] = map[string]any{
 		"command": exe,
-		"args":    []string{"serve"},
+		"args":    args,
 	}
 	m["mcpServers"] = servers
 
@@ -141,12 +154,16 @@ func mergeJSONConfig(path, exe string) (string, error) {
 // mergeCodexConfig setzt den [mcp_servers.<serverName>]-Block in der TOML.
 // Existiert er schon, wird er (inkl. Pfad) ersetzt; sonst angehaengt. Andere
 // Eintraege bleiben unangetastet.
-func mergeCodexConfig(path, exe string) (string, error) {
+func mergeCodexConfig(path, exe string, args []string) (string, error) {
 	data, _ := os.ReadFile(path)
 	content := string(data)
 	header := "[mcp_servers." + serverName + "]"
 	// Single-quoted TOML-Literal -> Backslashes im Windows-Pfad bleiben unangetastet.
-	newBlock := fmt.Sprintf("%s\ncommand = '%s'\nargs = ['serve']", header, exe)
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = "'" + a + "'"
+	}
+	newBlock := fmt.Sprintf("%s\ncommand = '%s'\nargs = [%s]", header, exe, strings.Join(quoted, ", "))
 
 	if err := backup(path); err != nil {
 		return "", err

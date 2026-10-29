@@ -25,8 +25,11 @@ Claude / Codex  ──MCP──▶  outlook-classic-mcp.exe  ──COM──▶ 
 - **Works where Microsoft Graph is blocked** — e.g. by Conditional Access or token
   protection policies. If Outlook works on your PC, this works.
 - **Local only.** Your mail never leaves your machine except to the AI client you use.
-- **Never sends.** Everything outgoing becomes a draft you review and send yourself —
-  meeting invitations and replies to invitations included.
+- **Sends only if you allow it.** Out of the box everything outgoing becomes a draft you
+  review and send yourself — meeting invitations and replies to invitations included.
+  Sending is an explicit opt-in (`--allow-send`), and even then only drafts go out.
+- **Audit log.** Every change the assistant makes — drafts, sends, moves, deletes,
+  calendar — is logged locally as one JSON line, without the message text.
 - **Files stay fenced in.** Attachments can only be added from — and saved to — your user
   profile and `%TEMP%`, so a crafted email can't talk the assistant into attaching
   arbitrary files.
@@ -62,6 +65,7 @@ checks its SHA-256 and registers it as server `outlook` in **Claude Desktop**,
 2. Register it:
    ```powershell
    .\outlook-classic-mcp.exe install           # Claude Desktop, Claude Code, Codex
+   .\outlook-classic-mcp.exe install --allow-send  # same, with sending enabled
    .\outlook-classic-mcp.exe install --print   # dry run: only show the config files
    .\outlook-classic-mcp.exe install codex     # only one target (desktop | code | codex)
    ```
@@ -106,6 +110,8 @@ Add a stdio server to your client's MCP config:
 | `mail_read` | Full emails with body and attachment names (several at once) |
 | `mail_create_draft` | New draft with To / CC / BCC |
 | `mail_reply` | Reply draft with thread and quote, optionally with attachments |
+| `mail_forward` | Forward draft with your text above the original (attachments included) |
+| `mail_send_draft` | Send a draft — **only with `--allow-send`**, see [Sending](#sending) |
 | `mail_update_draft` | Change a draft; in replies only your text is replaced, quote and signature stay |
 | `mail_attachments` | List attachments |
 | `mail_save_attachment` | Save attachments to disk so the assistant can read them |
@@ -129,17 +135,51 @@ Add a stdio server to your client's MCP config:
 | `calendar_respond` | Accept / tentative / decline an invitation — the response is saved as a **draft** |
 | `calendar_free_busy` | When colleagues are busy on a given day (30-minute blocks) |
 
-There is deliberately **no send tool**. In the calendar this means: a new meeting stays
-unsent until you click Send in Outlook, a response to an invitation lands in Drafts, and
-changing or deleting a meeting does not notify anyone — deleting a meeting you organize
-whose invitations were already sent is refused, so attendees aren't left with a ghost
-meeting (cancel it in Outlook instead).
+Without `--allow-send` there is **no send tool** at all. In the calendar this means: a
+new meeting stays unsent until you click Send in Outlook, a response to an invitation
+lands in Drafts, and changing or deleting a meeting does not notify anyone — deleting a
+meeting you organize whose invitations were already sent is refused, so attendees aren't
+left with a ghost meeting (cancel it in Outlook instead).
 
 Times go in and out as ISO 8601 in your local time (`2026-10-29T14:00`); a date alone
 (`2026-10-29`) makes an all-day event. An offset (`+01:00`, `Z`) is converted to local time.
 
 Email addresses always come back as SMTP addresses (`anna.smith@contoso.com`), also for
 Exchange senders and directory entries — never as `/O=…/CN=…`.
+
+### Sending
+
+Sending is off by default. To allow it, register the server with
+`install --allow-send` (or add `"--allow-send"` after `"serve"` in your client's `args`)
+and restart the client. Running `install` without the flag turns it off again.
+
+With sending on, the assistant still writes a draft first; `mail_send_draft` then sends it,
+and the tool tells the assistant to do so only after you have confirmed that exact draft.
+It refuses anything that is not an email or a meeting response in your **Drafts** folder,
+and it sends nothing if a recipient can't be resolved. Meetings are never sent by the
+server — invitations, updates and cancellations stay with you in Outlook.
+
+Sent mail first goes to the Outbox; classic Outlook delivers it on its next sync (with
+Outlook running, within seconds).
+
+**Outlook security prompt:** Outlook may show a warning that “a program is trying to send
+an email on your behalf” (the Object Model Guard). On PCs with an up-to-date, recognized
+antivirus this normally doesn't appear; where it does, sending waits for your click and
+times out after 90 s. Admins can control it with the Outlook policy *Programmatic Access
+Security*.
+
+### Audit log
+
+Every action that changes something is appended as one JSON line to
+`%LOCALAPPDATA%\outlook-classic-mcp\audit.log`:
+
+```json
+{"time":"2026-10-29T10:32:33+01:00","tool":"mail_send_draft","id":"00000000…","ok":true,"subject":"Offer","to":["anna.smith@contoso.com"]}
+```
+
+It records time, tool, IDs, recipients, subject and the result — never the message text.
+The file rotates at 5 MB (`audit.log.1`). Set `OUTLOOK_MCP_AUDIT_LOG` in the server's
+environment to another path, or to `off`. `outlook_whoami` shows where it is written.
 
 ### Attachment folders
 
@@ -182,6 +222,8 @@ after 5 minutes without a call.
 | First `contacts_search` takes a few seconds | Outlook can't filter the company directory, so the first search reads all names (~2 ms per entry) and keeps them for 30 minutes. Later searches are instant. |
 | Search over all folders takes seconds | It scans the text of every message (~5–10 s for a few thousand). Search one folder when you can. |
 | A dialog in Outlook blocks | Calls time out after 90 s; close the dialog and try again. |
+| `mail_send_draft` is missing | Sending is off — register with `install --allow-send` and restart the client. |
+| Sent mail stays in the Outbox | Classic Outlook is offline or not running; open it or run `mail_sync`. |
 
 ## Build from source
 
